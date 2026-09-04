@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-ssr/
+.env
+.env.*
+!.env.example
+auth_session*/
+data/
+logs/
+*.log
+.vercel
+whatsapp-qr.png
+*.local
+.DS_Store

@@ -1,0 +1,108 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Cliente {
+  id               String   @id @default(uuid())
+  nombre           String
+  numeroWhatsapp   String   @unique
+  activo           Boolean  @default(true)
+  aprobado         Boolean  @default(false)
+  requiereAtencion Boolean  @default(false)
+  motivoAtencion   String?
+  creadoEn         DateTime @default(now())
+
+  ultimoMensajeIdProcesado String?
+
+  pedidos  Pedido[]
+  facturas Factura[]
+}
+
+model Producto {
+  id            String   @id @default(uuid())
+  nombre        String   @unique
+  unidad        String   @default("kg")
+  precioActual  Decimal  @db.Decimal(10, 2)
+  existenciaKg  Decimal  @default(0) @db.Decimal(10, 2)
+  actualizadoEn DateTime @updatedAt
+
+  historialPrecios  HistorialPrecio[]
+  pedidos           Pedido[]
+  facturaCompraItems FacturaCompraItem[]
+}
+
+model Pedido {
+  id            String   @id @default(uuid())
+  clienteId     String
+  productoId    String
+  kilos         Decimal  @db.Decimal(10, 2)
+  precioUnitKg  Decimal  @db.Decimal(10, 2)
+  creadoEn      DateTime @default(now())
+
+  facturaId String?
+
+  cliente  Cliente  @relation(fields: [clienteId], references: [id])
+  producto Producto @relation(fields: [productoId], references: [id])
+  factura  Factura? @relation(fields: [facturaId], references: [id])
+}
+
+model HistorialPrecio {
+  id         String   @id @default(uuid())
+  productoId String
+  precio     Decimal  @db.Decimal(10, 2)
+  fuente     String?
+  creadoEn   DateTime @default(now())
+
+  producto Producto @relation(fields: [productoId], references: [id])
+}
+
+model Usuario {
+  id           String   @id @default(uuid())
+  nombre       String
+  email        String   @unique
+  passwordHash String
+  rol          String   @default("gerente")
+  creadoEn     DateTime @default(now())
+
+  facturasCreadas Factura[]
+}
+
+model Factura {
+  id          String    @id @default(uuid())
+  clienteId   String
+  tipo        String    @default("normal")
+  estado      String    @default("pendiente")
+  total       Decimal   @db.Decimal(10, 2)
+  creadoEn    DateTime  @default(now())
+  pagadaEn    DateTime?
+  creadoPorId String?
+
+  cliente   Cliente  @relation(fields: [clienteId], references: [id])
+  pedidos   Pedido[]
+  creadoPor Usuario? @relation(fields: [creadoPorId], references: [id])
+}
+
+model FacturaCompra {
+  id        String    @id @default(uuid())
+  proveedor String
+  fecha     DateTime?
+  total     Decimal?  @db.Decimal(10, 2)
+  creadoEn  DateTime  @default(now())
+
+  items FacturaCompraItem[]
+}
+
+model FacturaCompraItem {
+  id              String  @id @default(uuid())
+  facturaCompraId String
+  productoId      String
+  kilos           Decimal @db.Decimal(10, 2)
+  costoUnitKg     Decimal? @db.Decimal(10, 2)
+
+  facturaCompra FacturaCompra @relation(fields: [facturaCompraId], references: [id])
+  producto      Producto      @relation(fields: [productoId], references: [id])
+}

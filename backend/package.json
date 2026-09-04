@@ -1,0 +1,51 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/jwt": "^10.2.1",
+    "@hapi/boom": "^10.0.1",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "@whiskeysockets/baileys": "^6.7.24",
+    "bcryptjs": "^3.0.3",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.11.3",
+    "node-cron": "^4.6.0",
+    "openai": "^7.4.0",
+    "pino": "^10.3.1",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/node": "^26.2.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/qrcode-terminal": "^0.12.2",
+    "prisma": "^7.9.1",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.9.1": true,
+    "esbuild@0.28.2": true,
+    "prisma@7.9.1": true,
+    "protobufjs@7.6.5": true,
+    "@whiskeysockets/baileys@6.7.24": true
+  }
+}
