@@ -78,6 +78,13 @@ export async function connectWhatsApp(onReady?: () => void): Promise<void> {
     auth: state,
     logger,
     printQRInTerminal: false,
+    // Con señal débil, la consulta interna de propiedades de chats
+    // (fetchProps/fetchBlocklist/fetchPrivacySettings) nunca completa y deja
+    // a Baileys "sordo" aunque el socket siga abierto. El bot no usa nada de
+    // eso (mensajes que desaparecen, bloqueados, privacidad), así que se
+    // desactiva por completo en vez de solo darle más tiempo.
+    fireInitQueries: false,
+    defaultQueryTimeoutMs: 120_000,
   });
 
   socket.ev.on('creds.update', saveCreds);

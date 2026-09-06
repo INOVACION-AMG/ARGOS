@@ -203,6 +203,18 @@ export function buildServer() {
     }
   });
 
+  // Endpoint interno (solo localhost) para mandar un mensaje puntual a
+  // cualquier número desde el dueño/soporte, ej. mensaje de presentación.
+  app.post('/admin/enviar-mensaje', async (req, reply) => {
+    const { numero, texto } = (req.body as { numero?: string; texto?: string } | undefined) ?? {};
+    if (!numero || !texto) {
+      return reply.code(400).send({ ok: false, error: 'Falta numero o texto' });
+    }
+    const socket = getSocket();
+    await socket.sendMessage(`${numero}@s.whatsapp.net`, { text: texto });
+    return { ok: true };
+  });
+
   // Endpoint interno (solo localhost) para que el propio bot se avise a sí
   // mismo por WhatsApp, ej. tras confirmar que una reconexión quedó sana.
   app.post('/admin/avisar-owner', async (req, reply) => {

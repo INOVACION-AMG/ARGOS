@@ -75,7 +75,19 @@ async function handleMessage(socket: WASocket, msg: WAMessage) {
     const imageMessage = msg.message?.imageMessage;
     if (imageMessage) {
       await manejarFotoDePrecios(socket, msg, remoteJid);
+      return;
     }
+
+    // Cualquier otro texto o audio en este chat se procesa igual que un
+    // mensaje de cliente normal (permite probar el bot sin un segundo número).
+    let textoCliente = textoPropio;
+    if (!textoCliente && msg.message?.audioMessage) {
+      textoCliente = await manejarAudioEntrante(socket, msg, remoteJid);
+      if (!textoCliente) return;
+    }
+    if (!textoCliente) return;
+
+    await manejarMensajeDeCliente(socket, ownJid, remoteJid, msg.pushName ?? undefined, textoCliente, msg.key.id ?? undefined);
     return;
   }
 
@@ -91,6 +103,11 @@ async function handleMessage(socket: WASocket, msg: WAMessage) {
         text: `Listo, reactivé las respuestas automáticas para ${remoteJid.split('@')[0]}.`,
       });
     }
+    return;
+  }
+
+  if (msg.message?.imageMessage) {
+    await manejarFotoDePrecios(socket, msg, remoteJid);
     return;
   }
 
@@ -185,29 +202,12 @@ export async function manejarMensajeDeCliente(
   const numero = remoteJid.split('@')[0];
 
   try {
-    const { cliente, esNuevo } = await obtenerOCrearCliente(numero, nombrePerfil ?? `Cliente ${numero}`);
+    const { cliente } = await obtenerOCrearCliente(numero, nombrePerfil ?? `Cliente ${numero}`);
 
-    if (!cliente.aprobado) {
-      // Número no reconocido como cliente (puede ser familia, amigos, número
-      // equivocado, etc.). El bot no le responde nada. Solo avisamos al dueño
-      // la primera vez que escribe, para que decida si lo aprueba. No marcamos
-      // el mensaje como procesado: si más adelante se aprueba, este mismo
-      // mensaje debe poder recuperarse y procesarse de verdad.
-      if (esNuevo) {
-        await socket.sendMessage(ownJid, {
-          text:
-            `👤 Escribió un número nuevo: ${nombrePerfil ?? numero} (${numero})\n` +
-            `Mensaje: "${texto}"\n\n` +
-            `Si es cliente, ponle la etiqueta "Cliente" en WhatsApp Business (o escribe "${COMANDO_APROBAR} ${numero}" en este chat) para que el bot le empiece a responder. Si no lo es, ignora este mensaje.`,
-        });
-      }
-      return;
-    }
-
-    // A partir de aquí el cliente está aprobado y el mensaje va a tener una
-    // resolución real (respuesta automática o escalamiento a humano). Se
-    // marca como procesado para que la recuperación de pendientes no lo
-    // vuelva a repetir en la próxima reconexión.
+    // El mensaje va a tener una resolución real (respuesta automática o
+    // escalamiento a humano). Se marca como procesado para que la
+    // recuperación de pendientes no lo vuelva a repetir en la próxima
+    // reconexión.
     if (mensajeId) {
       await marcarMensajeProcesado(cliente.id, mensajeId);
     }
