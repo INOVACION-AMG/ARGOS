@@ -89,12 +89,16 @@ async function enviarArchivo(chatId: string, media: MessageMedia): Promise<SentM
   return { id: { _serialized: data.idMessage } };
 }
 
-// Cada tipo de mensaje con adjunto trae la data en una llave distinta
-// (imageMessageData, audioMessageData, etc.) pero con la misma forma --
-// downloadUrl + mimeType (+ caption para los que la tienen).
-function extraerMedia(messageData: any, tipo: string): { downloadUrl: string; mimetype: string } | undefined {
-  const llave = `${tipo.replace(/Message$/, '')}MessageData`;
-  const datos = messageData?.[llave];
+// Green API usa la MISMA llave "fileMessageData" para todo adjunto (imagen,
+// audio, video, documento) -- no una llave distinta por tipo
+// (imageMessageData, audioMessageData, etc., que es lo que asumía este
+// código antes y nunca existió en la respuesta real). Bug real: hacía que
+// downloadMedia() fallara siempre con "este mensaje no tiene un archivo
+// adjunto descargable" para CUALQUIER adjunto, detectado primero con audios
+// pero afectaba fotos igual (nunca se había probado una foto real).
+// Fuente: https://green-api.com/en/docs/api/receiving/notifications-format/incoming-message/ImageMessage/
+function extraerMedia(messageData: any): { downloadUrl: string; mimetype: string } | undefined {
+  const datos = messageData?.fileMessageData;
   if (!datos?.downloadUrl) return undefined;
   return { downloadUrl: datos.downloadUrl, mimetype: datos.mimeType ?? 'application/octet-stream' };
 }
@@ -128,18 +132,18 @@ function mapearNotificacionAMensaje(body: any, ownWid: string): Message | undefi
       type = 'image';
       hasMedia = true;
       texto = messageData.imageMessageData?.caption ?? '';
-      media = extraerMedia(messageData, tipoMensaje);
+      media = extraerMedia(messageData);
       break;
     case 'audioMessage':
       type = 'audio';
       hasMedia = true;
-      media = extraerMedia(messageData, tipoMensaje);
+      media = extraerMedia(messageData);
       break;
     case 'documentMessage':
       type = 'document';
       hasMedia = true;
       texto = messageData.documentMessageData?.caption ?? '';
-      media = extraerMedia(messageData, tipoMensaje);
+      media = extraerMedia(messageData);
       break;
     default:
       // video, sticker, ubicación, etc. -- no manejados, se ignoran igual
