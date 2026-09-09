@@ -1,10 +1,9 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
-import { jidNormalizedUser } from '@whiskeysockets/baileys';
 import { db } from '../db/client';
 import { getSocket } from '../whatsapp/connection';
-import { manejarMensajeDeCliente } from '../whatsapp/messageRouter';
+import { manejarMensajeDeCliente, enviarAvisoOwner } from '../whatsapp/messageRouter';
 import { validarLogin } from '../modules/usuarios/service';
 import { crearProducto, editarProducto, eliminarProducto } from '../modules/productos-precios/service';
 import {
@@ -211,7 +210,7 @@ export function buildServer() {
       return reply.code(400).send({ ok: false, error: 'Falta numero o texto' });
     }
     const socket = getSocket();
-    await socket.sendMessage(`${numero}@s.whatsapp.net`, { text: texto });
+    await socket.sendMessage(`${numero}@c.us`, texto);
     return { ok: true };
   });
 
@@ -220,11 +219,11 @@ export function buildServer() {
   app.post('/admin/avisar-owner', async (req, reply) => {
     const { texto } = (req.body as { texto?: string } | undefined) ?? {};
     const socket = getSocket();
-    const ownJid = jidNormalizedUser(socket.user?.id);
+    const ownJid = socket.info?.wid?._serialized;
     if (!ownJid) {
-      return reply.code(503).send({ ok: false, error: 'socket sin usuario todavía' });
+      return reply.code(503).send({ ok: false, error: 'cliente sin usuario todavía' });
     }
-    await socket.sendMessage(ownJid, { text: texto ?? '✅ El bot está sin novedad, conectado correctamente a WhatsApp.' });
+    await enviarAvisoOwner(socket, ownJid, texto ?? '✅ El bot está sin novedad, conectado correctamente a WhatsApp.');
     return { ok: true };
   });
 
@@ -235,9 +234,9 @@ export function buildServer() {
   app.post('/admin/simular-mensaje', async (req, reply) => {
     const { texto } = (req.body as { texto?: string } | undefined) ?? {};
     const socket = getSocket();
-    const ownJid = jidNormalizedUser(socket.user?.id);
+    const ownJid = socket.info?.wid?._serialized;
     if (!ownJid) {
-      return reply.code(503).send({ ok: false, error: 'socket sin usuario todavía' });
+      return reply.code(503).send({ ok: false, error: 'cliente sin usuario todavía' });
     }
     const numeroPrueba = ownJid.split('@')[0];
     await db.cliente.upsert({

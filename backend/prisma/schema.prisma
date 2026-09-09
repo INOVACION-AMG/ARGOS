@@ -60,6 +60,57 @@ model HistorialPrecio {
   producto Producto @relation(fields: [productoId], references: [id])
 }
 
+// Cuando un cliente en modo AMG pide algo que no está en el catálogo real
+// (AMG-LEGION/Supabase), se guarda aquí en vez de solo avisar y olvidar --
+// así el dueño puede contestar en cualquier momento (aunque el bot se
+// reinicie de por medio) con /agregar y el bot completa la cotización del
+// cliente automáticamente con el producto nuevo.
+model SolicitudProductoAmg {
+  id            String    @id @default(uuid())
+  clienteId     String
+  numeroCliente String
+  nombrePerfil  String?
+  nombrePedido  String
+  cantidad      Int       @default(1)
+  estado        String    @default("pendiente") // pendiente | resuelto
+  // Fase del flujo guiado en la que se detectó el faltante (ver
+  // flujoCotizacionAmg en messageRouter.ts) -- null si vino de un mensaje
+  // suelto sin flujo activo. Le dice a /agregar en qué "bolsillo" del
+  // borrador meter el producto nuevo (ítems normales / mano de obra /
+  // metraje) y con qué `tipo` crearlo en el catálogo real.
+  fase          String?
+  creadoEn      DateTime  @default(now())
+  resueltoEn    DateTime?
+}
+
+// Tarifa por tipo de cliente en modo AMG (preferencial, amigo, integrador,
+// sub, final, final vip) -- se pregunta la primera vez que aparece un tipo
+// nuevo (ver flujoCotizacionAmg.ts) y de ahí en adelante se aplica solo.
+// ajustePorcentaje: negativo = descuento, positivo = recargo (ej. -10 = 10%
+// menos sobre el subtotal antes de IVA).
+model TarifaClienteAmg {
+  id               String   @id @default(uuid())
+  nombre           String   @unique // normalizado en minúsculas, ver servicio
+  ajustePorcentaje Float
+  creadoEn         DateTime @default(now())
+}
+
+// Estado de la cotización que el jefe está armando con Argos en modo AMG --
+// el flujo tiene varios pasos (ítems, mano de obra, metraje, tipo de
+// cliente, resumen/aprobación) que pueden pasar en mensajes separados, así
+// que se persiste en vez de guardarse solo en memoria (el bot se reinicia
+// de vez en cuando). `datos` es un JSON con la forma de `BorradorCotizacionAmg`
+// (ver flujoCotizacionAmg.ts) -- ítems confirmados, mano de obra elegida,
+// metraje, tipo de cliente y el ajuste ya resuelto.
+model SesionCotizacionAmg {
+  id            String   @id @default(uuid())
+  numeroCliente String   @unique
+  fase          String // recolectando_items | esperando_mano_obra | esperando_metraje | esperando_tipo_cliente | esperando_aprobacion
+  datos         Json
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+}
+
 model Usuario {
   id           String   @id @default(uuid())
   nombre       String

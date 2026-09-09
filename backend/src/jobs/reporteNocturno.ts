@@ -1,7 +1,7 @@
-import type { WASocket } from '@whiskeysockets/baileys';
+import type { Client } from '../whatsapp/greenApi';
 import { obtenerResumenDelDia } from '../modules/pedidos/service';
 
-export async function enviarReporteNocturno(socket: WASocket) {
+export async function enviarReporteNocturno(socket: Client) {
   const numeroColver = process.env.COLVER_WHATSAPP_NUMBER;
 
   if (!numeroColver) {
@@ -27,7 +27,7 @@ export async function enviarReporteNocturno(socket: WASocket) {
     `Total de pedidos: ${resumen.totalPedidos}\n` +
     `Total en ventas: ${formatoCOP(resumen.totalGeneral)}`;
 
-  const jid = `${numeroColver}@s.whatsapp.net`;
-  await socket.sendMessage(jid, { text: texto });
+  const jid = `${numeroColver}@c.us`;
+  await socket.sendMessage(jid, texto);
   console.log(`Reporte nocturno enviado a Colver (${numeroColver}).`);
 }

@@ -5,7 +5,10 @@ import { iniciarProgramador } from './jobs/scheduler';
 
 async function main() {
   const app = buildServer();
-  await app.listen({ port: 3000, host: '0.0.0.0' });
+  // 127.0.0.1, no 0.0.0.0: los endpoints /admin/* no tienen autenticación
+  // propia (asumen que solo son alcanzables desde esta máquina) -- con
+  // 0.0.0.0 quedaban expuestos a cualquiera en la misma red local.
+  await app.listen({ port: 3000, host: '127.0.0.1' });
   console.log('API escuchando en http://localhost:3000');
 
   await connectWhatsApp(() => {

@@ -1,10 +1,10 @@
 import { schedule } from 'node-cron';
-import type { WASocket } from '@whiskeysockets/baileys';
+import type { Client } from '../whatsapp/greenApi';
 import { enviarReporteNocturno } from './reporteNocturno';
 
 let yaIniciado = false;
 
-export function iniciarProgramador(getSocket: () => WASocket) {
+export function iniciarProgramador(getSocket: () => Client) {
   // El bot se reconecta varias veces al día (cortes normales de WhatsApp);
   // sin esta guarda, cada reconexión registraría una tarea duplicada y el
   // reporte se enviaría varias veces a las 11pm.
