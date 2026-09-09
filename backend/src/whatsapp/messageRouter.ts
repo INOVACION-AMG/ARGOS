@@ -596,6 +596,18 @@ async function resolverMensajeAmg(
       resultado.respuesta ??
         'Hola LÍDER, soy Argos. Cuéntame qué necesitas cotizar y te preparo la cotización paso a paso.',
     );
+
+    // Si la "consulta" fue en realidad sobre productos reales del catálogo
+    // (ej. Argos preguntó "¿la necesitas 2MP o 4MP, interior o exterior?"),
+    // se guarda el contexto -- si no, la siguiente respuesta del jefe (ej.
+    // "la segunda") se procesaría como un mensaje nuevo sin ninguna relación
+    // y el bot "se pierde". Un saludo/pregunta genérica sin candidatos de
+    // catálogo no necesita esto.
+    if (resultado.tipo === 'consulta' && resultado.respuesta && resultado.huboCandidatosCatalogo) {
+      const borrador = borradorVacio(numero, nombrePerfil);
+      borrador.contextoPrevio = `Mensaje anterior del cliente: "${texto}"\nRespuesta que le diste (con opciones/pregunta): "${resultado.respuesta}"`;
+      await guardarSesion(numero, 'recolectando_items', borrador);
+    }
     return;
   }
 
@@ -621,6 +633,7 @@ interface ResultadoItemsTexto {
   productosNoDisponibles: string[];
   motivo?: string;
   respuesta?: string;
+  huboCandidatosCatalogo: boolean;
 }
 
 // Punto único para "sacar ítems con precio de un texto libre contra el
@@ -650,6 +663,7 @@ async function resolverItemsEnTexto(texto: string, imagen?: ImagenAmg): Promise<
     productosNoDisponibles: interpretacion.productosNoDisponibles,
     motivo: interpretacion.motivo,
     respuesta: interpretacion.respuesta,
+    huboCandidatosCatalogo: catalogo.length > 0,
   };
 }
 
@@ -945,7 +959,15 @@ async function continuarFlujoCotizacion(
 
   switch (sesion.fase) {
     case 'recolectando_items': {
-      const resultado = await resolverItemsEnTexto(texto);
+      // Si Argos le había hecho una pregunta aclaratoria antes (ej. "¿la
+      // necesitas 2MP o 4MP, interior o exterior?"), esta respuesta ("la
+      // segunda", "para exterior") solo tiene sentido leída junto con esa
+      // pregunta -- se le pasa ese contexto a la IA en vez de solo el texto
+      // suelto, que por sí solo no identificaría ningún producto.
+      const mensajeConContexto = borrador.contextoPrevio
+        ? `${borrador.contextoPrevio}\nNueva respuesta del cliente: "${texto}"`
+        : texto;
+      const resultado = await resolverItemsEnTexto(mensajeConContexto);
 
       if (resultado.tipo === 'requiere_humano') {
         await escalarAHumanoDesdeFlujo(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, resultado.motivo);
@@ -953,12 +975,21 @@ async function continuarFlujoCotizacion(
       }
 
       if (resultado.itemsResueltos.length === 0 && resultado.productosNoDisponibles.length === 0) {
+        if (resultado.tipo === 'consulta' && resultado.respuesta && resultado.huboCandidatosCatalogo) {
+          // Sigue siendo una aclaración (puede haber varias rondas) --
+          // se actualiza el contexto y se mantiene la sesión viva.
+          borrador.contextoPrevio = `${mensajeConContexto}\nRespuesta que le diste (con opciones/pregunta): "${resultado.respuesta}"`;
+          await guardarSesion(numero, 'recolectando_items', borrador);
+          await client.sendMessage(chatId, resultado.respuesta);
+          return;
+        }
         await client.sendMessage(
           chatId,
           resultado.respuesta ?? 'No logré identificar ningún producto ahí, LÍDER. ¿Me confirmas qué necesitas (nombre y cantidad)?',
         );
         return;
       }
+      borrador.contextoPrevio = undefined;
       borrador.items.push(...resultado.itemsResueltos);
 
       if (resultado.productosNoDisponibles.length > 0) {

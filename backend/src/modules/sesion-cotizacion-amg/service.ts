@@ -30,6 +30,13 @@ export interface BorradorCotizacionAmg {
   // 'esperando_cliente_final', justo después de recolectar ítems. Ver
   // modules/clientes-finales-amg/service.ts.
   clienteFinal?: string;
+  // Cuando Argos le hace una pregunta aclaratoria al jefe (ej. "¿la
+  // necesitas para interior o exterior, 2MP o 4MP?") antes de que se
+  // identifique un producto concreto, se guarda aquí para que la siguiente
+  // respuesta ("la segunda", "para exterior") se interprete en ese contexto
+  // en vez de como un mensaje nuevo sin relación. Se limpia en cuanto se
+  // resuelve algo concreto. Ver `recolectando_items` en messageRouter.ts.
+  contextoPrevio?: string;
   items: ItemBorradorAmg[];
   manoObra: ItemBorradorAmg[];
   metraje: ItemBorradorAmg[];
