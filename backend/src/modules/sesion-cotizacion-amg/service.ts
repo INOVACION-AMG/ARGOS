@@ -63,9 +63,23 @@ export function borradorVacio(numeroCliente: string, nombrePerfil?: string): Bor
   return { numeroCliente, nombrePerfil, items: [], manoObra: [], metraje: [], productosNoDisponibles: [] };
 }
 
+// Si el jefe deja una cotización (o incluso una simple aclaración de
+// producto, ver contextoPrevio) a medias y vuelve horas o días después
+// hablando de otra cosa, no tiene sentido seguir arrastrando ese contexto
+// viejo -- se descarta sola después de un rato de inactividad, en vez de
+// quedar "pegada" indefinidamente.
+const HORAS_EXPIRACION_SESION = 6;
+
 export async function obtenerSesion(numeroCliente: string): Promise<{ fase: FaseCotizacionAmg; datos: BorradorCotizacionAmg } | null> {
   const fila = await db.sesionCotizacionAmg.findUnique({ where: { numeroCliente } });
   if (!fila) return null;
+
+  const horasInactiva = (Date.now() - fila.actualizadoEn.getTime()) / (1000 * 60 * 60);
+  if (horasInactiva > HORAS_EXPIRACION_SESION) {
+    await db.sesionCotizacionAmg.delete({ where: { numeroCliente } }).catch(() => {});
+    return null;
+  }
+
   return { fase: fila.fase as FaseCotizacionAmg, datos: fila.datos as unknown as BorradorCotizacionAmg };
 }
 

@@ -181,6 +181,104 @@ export async function interpretarTipoDocumento(texto: string): Promise<'cuenta_c
   return tipo === 'cuenta_cobro' || tipo === 'factura' ? tipo : undefined;
 }
 
+const TIPOS_CLIENTE_CONOCIDOS = ['preferencial', 'amigo', 'integrador', 'sub', 'final vip', 'final'];
+const TOOL_NAME_TIPO_CLIENTE = 'responder_tipo_cliente';
+
+// Respaldo de detectarTipoCliente (tarifas-amg/service.ts), que solo hace
+// coincidencia exacta de texto -- si el jefe escribe con un typo ("preferencia",
+// "integrado") o de forma indirecta ("es como un amigo de la casa"), esa
+// función no lo reconoce y se le vuelve a preguntar sin necesidad. Solo se
+// llama como respaldo (no reemplaza la coincidencia exacta, que es gratis y
+// ya cubre el caso normal) para no gastar una llamada a IA en cada respuesta.
+export async function interpretarTipoClienteConocido(texto: string): Promise<string | undefined> {
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-5',
+    max_tokens: 256,
+    tool_choice: { type: 'tool', name: TOOL_NAME_TIPO_CLIENTE },
+    tools: [
+      {
+        name: TOOL_NAME_TIPO_CLIENTE,
+        description:
+          `Se le preguntó al jefe de AMG a qué tipo de cliente pertenece esta cotización, de esta lista fija: ${TIPOS_CLIENTE_CONOCIDOS.join(', ')}. ` +
+          'El jefe puede escribirlo con typos, mayúsculas distintas, o de forma indirecta -- determina a cuál de la lista se refería.',
+        input_schema: {
+          type: 'object',
+          properties: {
+            tipo: {
+              type: 'string',
+              enum: [...TIPOS_CLIENTE_CONOCIDOS, 'no_entendido'],
+              description: 'Uno exacto de la lista si quedó claro (incluso con typos o dicho indirectamente). "no_entendido" si no corresponde a ninguno.',
+            },
+          },
+          required: ['tipo'],
+        },
+      },
+    ],
+    messages: [{ role: 'user', content: `Respuesta del jefe: "${texto}"` }],
+  });
+
+  const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+  const tipo = (toolUse?.input as { tipo?: string } | undefined)?.tipo;
+  return tipo && TIPOS_CLIENTE_CONOCIDOS.includes(tipo) ? tipo : undefined;
+}
+
+export interface SolicitudHistorialCotizacion {
+  esSolicitudDeHistorial: boolean;
+  nombreCliente?: string;
+}
+
+const TOOL_NAME_HISTORIAL = 'interpretar_solicitud_historial';
+
+// Distingue "mándame la cotización que le hice a Altavista" (quiere
+// RECUPERAR una ya hecha) de "hazme una cotización de 4 cámaras" (quiere
+// una NUEVA) -- antes de esto no había forma de reenviar un PDF viejo por
+// WhatsApp, tocaba ir a la app web. Se llama solo cuando un filtro barato
+// (pareceQuiereHistorial) ya sugiere que podría ser esto, no en cada mensaje.
+export async function interpretarSolicitudHistorial(texto: string): Promise<SolicitudHistorialCotizacion> {
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-5',
+    max_tokens: 256,
+    tool_choice: { type: 'tool', name: TOOL_NAME_HISTORIAL },
+    tools: [
+      {
+        name: TOOL_NAME_HISTORIAL,
+        description:
+          'Determina si el jefe de AMG está pidiendo que le REENVÍEN/MUESTREN una cotización que YA EXISTE (ej. "mándame la cotización de Altavista", "la última que le hice a Mileto", "pásame el pdf de Cedritos") -- NO que le armen una cotización nueva (eso es otro flujo).',
+        input_schema: {
+          type: 'object',
+          properties: {
+            esSolicitudDeHistorial: {
+              type: 'boolean',
+              description: 'true SOLO si claramente pide recuperar/reenviar una cotización que ya se hizo antes. false si pide una nueva, o si no tiene nada que ver con cotizaciones.',
+            },
+            nombreCliente: {
+              type: 'string',
+              description: 'El nombre del cliente final mencionado (ej. "Altavista", "Mileto"), tal como lo escribió el jefe. Omitir si no mencionó ninguno.',
+            },
+          },
+          required: ['esSolicitudDeHistorial'],
+        },
+      },
+    ],
+    messages: [{ role: 'user', content: `Mensaje del jefe: "${texto}"` }],
+  });
+
+  const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
+  return (toolUse?.input as SolicitudHistorialCotizacion | undefined) ?? { esSolicitudDeHistorial: false };
+}
+
+// Filtro barato antes de gastar una llamada a IA -- solo dispara la
+// interpretación completa si hay un verbo de "mándamela otra vez" Y algo que
+// sugiera que se refiere a algo YA EXISTENTE (no necesariamente dice la
+// palabra "cotización" -- "la última que le hice a X, pásamela" es tan común
+// como "mándame la cotización de X").
+export function pareceQuiereHistorial(texto: string): boolean {
+  const t = texto.toLowerCase();
+  const verboDeReenvio = /(mandam|manda me|env[ií]am|env[ií]a me|reenv[ií]am|reenv[ií]a me|pasam|pasa me|comp[aá]rtem|comparte me|mu[eé]strame|muestra me|busca la|ver la)/.test(t);
+  const refiereAlgoExistente = /(cotizaci[oó]n|la ultima|la última|la anterior|esa misma|de nuevo)/.test(t);
+  return verboDeReenvio && refiereAlgoExistente;
+}
+
 const CATEGORIAS_MANO_OBRA = ['mano de obra configuración', 'mano de obra configuracion', 'obra civil', 'técnico especializado', 'tecnico especializado', 'mano de obra'];
 
 // Solo se usa para decidir si preguntar mano de obra otra vez o seguir --

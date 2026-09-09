@@ -8,6 +8,9 @@ import {
   interpretarTipoDocumento,
   pareceRespuestaVacia,
   pareceQuiereCancelar,
+  interpretarTipoClienteConocido,
+  interpretarSolicitudHistorial,
+  pareceQuiereHistorial,
   type ActualizacionManoObra,
 } from '../ai/flujoCotizacionAmg';
 import { transcribirAudio } from '../ai/transcribe';
@@ -26,7 +29,7 @@ import {
   reanudarBot,
 } from '../modules/clientes/service';
 import { crearPedido } from '../modules/pedidos/service';
-import { crearCotizacionAmg, crearCotizacionAmgDesdeItemsResueltos } from '../modules/cotizaciones-amg/service';
+import { crearCotizacionAmg, crearCotizacionAmgDesdeItemsResueltos, obtenerPdfCotizacion } from '../modules/cotizaciones-amg/service';
 import {
   crearSolicitudProductoAmg,
   obtenerSolicitudPendienteMasReciente,
@@ -180,6 +183,17 @@ async function handleMessage(client: Client, msg: Message) {
   if (!texto && msg.hasMedia && (msg.type === 'audio' || msg.type === 'ptt')) {
     texto = await manejarAudioEntrante(client, msg, chatId);
     if (!texto) return; // no se pudo transcribir, ya se avisó al cliente
+  }
+
+  // Documentos (PDF, Word, etc.) y videos no se pueden leer todavía -- antes
+  // se perdían en silencio (si venían con texto/caption, ese texto solo se
+  // procesaba sin avisar que el archivo adjunto se ignoró por completo).
+  if (msg.hasMedia && (msg.type === 'document' || msg.type === 'video')) {
+    await client.sendMessage(
+      chatId,
+      'Por ahora no puedo leer documentos ni videos directamente, LÍDER. ¿Me cuentas por texto qué necesitas, o me mandas una foto?',
+    );
+    return;
   }
 
   if (!texto) return;
@@ -521,6 +535,53 @@ export async function manejarMensajeDeCliente(
 // ítems, mano de obra, metraje, tipo de cliente, resumen y aprobación --
 // antes de generar el PDF final. El estado de en qué paso va (si hay uno
 // activo) se persiste en SesionCotizacionAmg (ver sesion-cotizacion-amg).
+// Atiende "mándame la cotización de X" / "la última que le hice a Y" --
+// busca el cliente final en la memoria (fuzzy, ver clientes-finales-amg) y,
+// si tiene una cotización real asociada, descarga el PDF ya generado (no
+// hace falta rehacerlo). Los clientes sembrados desde cotizaciones viejas en
+// papel/Excel no tienen `ultimaCotizacionId` -- se les avisa que solo hay
+// precios de referencia, no un PDF real que mandar.
+async function manejarSolicitudHistorialCotizacion(client: Client, chatId: string, nombreCliente: string | undefined) {
+  if (!nombreCliente) {
+    await client.sendMessage(chatId, '¿De qué cliente es la cotización que buscas, LÍDER?');
+    return;
+  }
+
+  let historial: Awaited<ReturnType<typeof buscarClienteFinal>> = null;
+  try {
+    historial = await buscarClienteFinal(nombreCliente);
+  } catch (err) {
+    console.error('Error buscando historial para reenviar cotización AMG:', err);
+    await client.sendMessage(chatId, 'Tuve un problema buscando ese historial, LÍDER. Intenta de nuevo en un momento.');
+    return;
+  }
+
+  if (!historial) {
+    await client.sendMessage(chatId, `No tengo ninguna cotización guardada de "${nombreCliente}", LÍDER.`);
+    return;
+  }
+
+  if (!historial.ultimaCotizacionId) {
+    const resumen = historial.items.map((it) => `- ${it.descripcion}: ${it.cantidad} x ${formatoCOP(it.precioUnitario)}`).join('\n');
+    await client.sendMessage(
+      chatId,
+      `No tengo un PDF guardado de "${historial.nombre}" (es de antes del bot), pero sí el historial de precios, LÍDER:\n${resumen}`,
+    );
+    return;
+  }
+
+  const resultado = await obtenerPdfCotizacion(historial.ultimaCotizacionId);
+  if (!resultado) {
+    await client.sendMessage(chatId, `Encontré el registro de "${historial.nombre}", pero tuve un problema descargando el PDF, LÍDER. Ya reviso qué pasó.`);
+    return;
+  }
+
+  const consecutivoLabel = String(resultado.consecutivo).padStart(3, '0');
+  await client.sendMessage(chatId, `Aquí está, LÍDER -- cotización #${resultado.consecutivo} de "${historial.nombre}":`);
+  const media = new MessageMedia('application/pdf', resultado.pdfBuffer.toString('base64'), `Cotizacion-${consecutivoLabel}.pdf`);
+  await client.sendMessage(chatId, media);
+}
+
 async function resolverMensajeAmg(
   client: Client,
   ownJid: string,
@@ -537,6 +598,18 @@ async function resolverMensajeAmg(
   if (sesionExistente) {
     await continuarFlujoCotizacion(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, sesionExistente, imagen);
     return;
+  }
+
+  // "Mándame la cotización de Altavista" (recuperar una ya hecha) es un
+  // pedido totalmente distinto a "cotízame 4 cámaras" (armar una nueva) --
+  // se revisa antes de intentar resolver ítems, con un filtro barato primero
+  // para no gastar una llamada a IA en cada mensaje.
+  if (pareceQuiereHistorial(texto)) {
+    const solicitud = await interpretarSolicitudHistorial(texto);
+    if (solicitud.esSolicitudDeHistorial) {
+      await manejarSolicitudHistorialCotizacion(client, chatId, solicitud.nombreCliente);
+      return;
+    }
   }
 
   let resultado: ResultadoItemsTexto;
@@ -829,7 +902,7 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
   try {
     const cotizacion = await crearCotizacionAmgDesdeItemsResueltos(
       borrador.numeroCliente,
-      borrador.nombrePerfil ?? `Cliente ${borrador.numeroCliente}`,
+      borrador.clienteFinal ?? borrador.nombrePerfil ?? `Cliente ${borrador.numeroCliente}`,
       todos.map((it) => ({
         productoId: it.productoId,
         nombre: it.nombre,
@@ -873,6 +946,7 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
         await guardarHistorialCliente(
           borrador.clienteFinal,
           cotizacion.items.map((i) => ({ descripcion: i.producto, cantidad: i.cantidad, precioUnitario: i.valorUnitario })),
+          cotizacion.id,
         );
       } catch (err) {
         // No debe tumbar la cotización ya generada -- es solo para
@@ -1179,7 +1253,18 @@ async function continuarFlujoCotizacion(
         return;
       }
 
-      const tipo = detectarTipoCliente(texto);
+      // Coincidencia exacta primero (gratis, cubre el caso normal); solo si
+      // falla se recurre a IA, para aguantar typos o respuestas indirectas
+      // ("es como un amigo de la casa") sin gastar una llamada de más en el
+      // caso común.
+      let tipo = detectarTipoCliente(texto);
+      if (!tipo) {
+        try {
+          tipo = await interpretarTipoClienteConocido(texto);
+        } catch (err) {
+          console.error('Error interpretando tipo de cliente AMG:', err);
+        }
+      }
       if (!tipo) {
         await client.sendMessage(chatId, 'No reconocí ese tipo, LÍDER. Elige uno: preferencial, amigo, integrador, sub, final, final vip.');
         return;

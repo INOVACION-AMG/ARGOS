@@ -10,6 +10,7 @@ export interface ClienteFinalHistorial {
   nombre: string;
   items: ItemHistorialCliente[];
   ultimaCotizacion: Date | null;
+  ultimaCotizacionId: string | null;
 }
 
 const MARCAS_DIACRITICAS = /[̀-ͯ]/g;
@@ -43,7 +44,12 @@ export async function buscarClienteFinal(nombreLibre: string): Promise<ClienteFi
 
   const exacto = await db.clienteFinalAmg.findUnique({ where: { nombreNormalizado: normalizado } });
   if (exacto) {
-    return { nombre: exacto.nombre, items: exacto.items as unknown as ItemHistorialCliente[], ultimaCotizacion: exacto.ultimaCotizacion };
+    return {
+      nombre: exacto.nombre,
+      items: exacto.items as unknown as ItemHistorialCliente[],
+      ultimaCotizacion: exacto.ultimaCotizacion,
+      ultimaCotizacionId: exacto.ultimaCotizacionId,
+    };
   }
 
   const palabrasBuscadas = palabrasClave(nombreLibre);
@@ -68,21 +74,37 @@ export async function buscarClienteFinal(nombreLibre: string): Promise<ClienteFi
   // sola palabra suelta (ej. "Terrazas del Norte" vs "Terrazas del Sol").
   if (!mejor || mejorScore < Math.ceil(palabrasBuscadas.length / 2)) return null;
 
-  return { nombre: mejor.nombre, items: mejor.items as unknown as ItemHistorialCliente[], ultimaCotizacion: mejor.ultimaCotizacion };
+  return {
+    nombre: mejor.nombre,
+    items: mejor.items as unknown as ItemHistorialCliente[],
+    ultimaCotizacion: mejor.ultimaCotizacion,
+    ultimaCotizacionId: mejor.ultimaCotizacionId,
+  };
 }
 
 // Se llama al finalizar cada cotización real (ver finalizarCotizacion en
 // messageRouter.ts) para que la próxima vez que se cotice a este mismo
-// cliente final, Argos pueda mostrar lo que se le cotizó la última vez.
+// cliente final, Argos pueda mostrar lo que se le cotizó la última vez (y,
+// si pide que se la reenvíen, encontrar el PDF real por `cotizacionId`).
 // Reemplaza el historial anterior por el de la cotización más reciente (no
 // se acumula infinitamente -- lo último es lo más útil como referencia).
-export async function guardarHistorialCliente(nombreLibre: string, items: ItemHistorialCliente[]): Promise<void> {
+export async function guardarHistorialCliente(
+  nombreLibre: string,
+  items: ItemHistorialCliente[],
+  cotizacionId?: string,
+): Promise<void> {
   const normalizado = normalizar(nombreLibre);
   if (!normalizado || items.length === 0) return;
 
   await db.clienteFinalAmg.upsert({
     where: { nombreNormalizado: normalizado },
-    update: { items: items as any, ultimaCotizacion: new Date() },
-    create: { nombreNormalizado: normalizado, nombre: nombreLibre.trim(), items: items as any, ultimaCotizacion: new Date() },
+    update: { items: items as any, ultimaCotizacion: new Date(), ultimaCotizacionId: cotizacionId },
+    create: {
+      nombreNormalizado: normalizado,
+      nombre: nombreLibre.trim(),
+      items: items as any,
+      ultimaCotizacion: new Date(),
+      ultimaCotizacionId: cotizacionId,
+    },
   });
 }

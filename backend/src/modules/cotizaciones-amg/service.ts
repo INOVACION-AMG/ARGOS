@@ -29,6 +29,27 @@ export interface CotizacionAmgCreada {
   pdfBuffer?: Buffer;
 }
 
+// Para cuando el jefe pide que le reenvíen una cotización ya hecha (ver
+// interpretarSolicitudHistorial en ai/flujoCotizacionAmg.ts) -- el PDF ya
+// quedó subido a este bucket al crearla, no hace falta regenerarlo.
+export async function obtenerPdfCotizacion(cotizacionId: string): Promise<{ pdfBuffer: Buffer; consecutivo: number } | null> {
+  const supabase = amgSupabase();
+
+  const { data: fila, error: errFila } = await supabase.from('cotizaciones').select('consecutivo').eq('id', cotizacionId).maybeSingle();
+  if (errFila || !fila) {
+    console.error(`No se encontró la cotización ${cotizacionId}:`, errFila?.message);
+    return null;
+  }
+
+  const { data, error } = await supabase.storage.from(BUCKET_COTIZACIONES).download(`${cotizacionId}/cotizacion.pdf`);
+  if (error || !data) {
+    console.error(`No se pudo descargar el PDF de la cotización ${cotizacionId}:`, error?.message);
+    return null;
+  }
+
+  return { pdfBuffer: Buffer.from(await data.arrayBuffer()), consecutivo: fila.consecutivo as number };
+}
+
 async function obtenerNombreAsesor(comercialId: string): Promise<string> {
   const { data } = await amgSupabase().from('profiles').select('full_name').eq('id', comercialId).maybeSingle();
   return data?.full_name ?? 'AMG';

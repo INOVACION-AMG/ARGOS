@@ -124,6 +124,12 @@ model ClienteFinalAmg {
   nombre            String // como lo escribió el jefe la primera vez
   items             Json
   ultimaCotizacion  DateTime?
+  // id (uuid) de la fila real en `cotizaciones` del Supabase de AMG-LEGION --
+  // permite recuperar el PDF ya generado (bucket "cotizaciones",
+  // `${id}/cotizacion.pdf`) cuando el jefe pide que se la reenvíen. Puede
+  // faltar en clientes sembrados desde cotizaciones históricas en papel/Excel
+  // (de antes de tener el bot), que nunca tuvieron una fila real.
+  ultimaCotizacionId String?
   creadoEn          DateTime  @default(now())
   actualizadoEn     DateTime  @updatedAt
 }
