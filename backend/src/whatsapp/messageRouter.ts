@@ -7,6 +7,7 @@ import {
   interpretarRespuestaTarifa,
   interpretarTipoDocumento,
   pareceRespuestaVacia,
+  pareceQuiereCancelar,
   type ActualizacionManoObra,
 } from '../ai/flujoCotizacionAmg';
 import { transcribirAudio } from '../ai/transcribe';
@@ -32,6 +33,7 @@ import {
   marcarSolicitudResuelta,
 } from '../modules/solicitudes-producto-amg/service';
 import { obtenerTarifa, guardarTarifa, detectarTipoCliente } from '../modules/tarifas-amg/service';
+import { buscarClienteFinal, guardarHistorialCliente } from '../modules/clientes-finales-amg/service';
 import {
   obtenerSesion,
   guardarSesion,
@@ -687,6 +689,8 @@ function parsearPrecio(texto: string): number | undefined {
 
 function preguntaFase(fase: FaseCotizacionAmg): string {
   switch (fase) {
+    case 'esperando_cliente_final':
+      return '¿Para qué cliente final es esta cotización, LÍDER? (ej. nombre del conjunto, edificio o persona)';
     case 'esperando_mano_obra':
       return (
         '¿Necesitas mano de obra de configuración, mano de obra, obra civil o técnico especializado, LÍDER? ' +
@@ -849,6 +853,19 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
       const media = new MessageMedia('application/pdf', cotizacion.pdfBuffer.toString('base64'), `Cotizacion-${consecutivoLabel}.pdf`);
       await client.sendMessage(chatId, media);
     }
+
+    if (borrador.clienteFinal) {
+      try {
+        await guardarHistorialCliente(
+          borrador.clienteFinal,
+          cotizacion.items.map((i) => ({ descripcion: i.producto, cantidad: i.cantidad, precioUnitario: i.valorUnitario })),
+        );
+      } catch (err) {
+        // No debe tumbar la cotización ya generada -- es solo para
+        // referencia futura, se pierde esta actualización puntual y ya.
+        console.error('Error guardando historial de cliente final AMG:', err);
+      }
+    }
   } catch (err) {
     console.error('Error finalizando cotización del flujo guiado AMG:', err);
     await client.sendMessage(chatId, 'Tuve un problema generando la cotización final, LÍDER. Ya avisé al equipo, te la confirman manualmente.');
@@ -858,6 +875,47 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
       `⚠️ [AMG] Falló la creación final de una cotización del flujo guiado para ${borrador.numeroCliente}. Revisa manualmente.`,
     );
   }
+}
+
+// Mismo manejo de escalado a humano que usa el mensaje de entrada
+// (resolverMensajeAmg) cuando la IA clasifica el mensaje como
+// 'requiere_humano' -- se repite acá porque puede pasar en medio de
+// cualquier fase del flujo guiado (ej: el jefe aprovecha para describir un
+// diseño completo o un reclamo mientras está cotizando otra cosa).
+async function escalarAHumanoDesdeFlujo(
+  client: Client,
+  ownJid: string,
+  chatId: string,
+  clienteId: string,
+  nombrePerfil: string | undefined,
+  numero: string,
+  texto: string,
+  motivo: string | undefined,
+) {
+  const motivoFinal = motivo ?? 'mensaje que necesita revisión manual';
+  console.log(`[AMG] Escalado a humano (a medias de un flujo): ${numero} -- ${motivoFinal}`);
+  await marcarRequiereAtencion(clienteId, motivoFinal);
+  await client.sendMessage(chatId, 'Ya recibí tu mensaje, LÍDER. Dame un momento y te confirmo.');
+  await enviarAvisoOwner(
+    client,
+    ownJid,
+    `⚠️ [AMG] Atención requerida (a medias de una cotización)\n` +
+      `Jefe: ${nombrePerfil ?? numero} (${numero})\n` +
+      `Motivo: ${motivoFinal}\n` +
+      `Mensaje: "${texto}"\n\n` +
+      `El bot dejó de responder automáticamente en ese chat. Cuando termines, escribe ${COMANDO_REANUDAR} ${numero} aquí mismo.`,
+  );
+}
+
+// A qué fase sigue después de resolver (con precio, del catálogo o recién
+// creado) o descartar un producto pendiente -- depende de en qué fase se
+// había preguntado originalmente.
+function siguienteFaseTrasProducto(faseOrigen: FaseCotizacionAmg): FaseCotizacionAmg {
+  return faseOrigen === 'recolectando_items'
+    ? 'esperando_cliente_final'
+    : faseOrigen === 'esperando_mano_obra'
+      ? 'esperando_metraje'
+      : 'esperando_tipo_cliente';
 }
 
 // Dispatcher del flujo guiado: recibe la respuesta del jefe para lo que se
@@ -875,11 +933,30 @@ async function continuarFlujoCotizacion(
 ) {
   const borrador = sesion.datos;
 
+  // Se puede arrepentir/equivocar en cualquier fase -- excepto en
+  // 'esperando_precio_producto', donde "olvídalo" significa "no agregues
+  // ESE producto puntual" (se maneja ahí mismo, sin tirar toda la
+  // cotización que ya llevaba armada).
+  if (sesion.fase !== 'esperando_precio_producto' && pareceQuiereCancelar(texto)) {
+    await borrarSesion(numero);
+    await client.sendMessage(chatId, 'Listo, LÍDER, cancelé esa cotización a medias. Cuando quieras, dime qué necesitas y armamos otra.');
+    return;
+  }
+
   switch (sesion.fase) {
     case 'recolectando_items': {
       const resultado = await resolverItemsEnTexto(texto);
+
+      if (resultado.tipo === 'requiere_humano') {
+        await escalarAHumanoDesdeFlujo(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, resultado.motivo);
+        return;
+      }
+
       if (resultado.itemsResueltos.length === 0 && resultado.productosNoDisponibles.length === 0) {
-        await client.sendMessage(chatId, 'No logré identificar ningún producto ahí, LÍDER. ¿Me confirmas qué necesitas (nombre y cantidad)?');
+        await client.sendMessage(
+          chatId,
+          resultado.respuesta ?? 'No logré identificar ningún producto ahí, LÍDER. ¿Me confirmas qué necesitas (nombre y cantidad)?',
+        );
         return;
       }
       borrador.items.push(...resultado.itemsResueltos);
@@ -889,6 +966,33 @@ async function continuarFlujoCotizacion(
         return;
       }
 
+      await avanzarAFase(client, chatId, borrador, 'esperando_cliente_final');
+      return;
+    }
+
+    case 'esperando_cliente_final': {
+      borrador.clienteFinal = texto.trim();
+
+      let historial: Awaited<ReturnType<typeof buscarClienteFinal>> = null;
+      try {
+        historial = await buscarClienteFinal(texto);
+      } catch (err) {
+        console.error('Error buscando historial de cliente final AMG:', err);
+      }
+
+      if (historial && historial.items.length > 0) {
+        const resumen = historial.items
+          .map((it) => `- ${it.descripcion}: ${it.cantidad} x ${formatoCOP(it.precioUnitario)}`)
+          .join('\n');
+        const fechaLabel = historial.ultimaCotizacion
+          ? new Date(historial.ultimaCotizacion).toLocaleDateString('es-CO')
+          : 'una vez anterior';
+        await client.sendMessage(
+          chatId,
+          `Encontré historial de "${historial.nombre}" (${fechaLabel}), LÍDER:\n${resumen}\n\nEsto es solo de referencia, seguimos con la cotización actual.`,
+        );
+      }
+
       await avanzarAFase(client, chatId, borrador, 'esperando_mano_obra');
       return;
     }
@@ -896,10 +1000,26 @@ async function continuarFlujoCotizacion(
     case 'esperando_mano_obra': {
       if (!pareceRespuestaVacia(texto)) {
         const resultado = await resolverItemsEnTexto(texto);
+
+        if (resultado.tipo === 'requiere_humano') {
+          await escalarAHumanoDesdeFlujo(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, resultado.motivo);
+          return;
+        }
+
         borrador.manoObra.push(...resultado.itemsResueltos.map((it) => ({ ...it, tipo: 'mano_obra' as const })));
 
         if (resultado.productosNoDisponibles.length > 0) {
           await preguntarPrecioProducto(client, chatId, borrador, resultado.productosNoDisponibles[0], 'esperando_mano_obra');
+          return;
+        }
+
+        // Ni un producto reconocido ni "ninguna" -- no asumir en silencio
+        // que no necesita mano de obra, mejor pedir que aclare.
+        if (resultado.itemsResueltos.length === 0) {
+          await client.sendMessage(
+            chatId,
+            resultado.respuesta ?? 'No te entendí, LÍDER. ¿Qué mano de obra necesitas (o dime "ninguna" si no aplica)?',
+          );
           return;
         }
       }
@@ -910,10 +1030,24 @@ async function continuarFlujoCotizacion(
     case 'esperando_metraje': {
       if (!pareceRespuestaVacia(texto)) {
         const resultado = await resolverItemsEnTexto(texto);
+
+        if (resultado.tipo === 'requiere_humano') {
+          await escalarAHumanoDesdeFlujo(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, resultado.motivo);
+          return;
+        }
+
         borrador.metraje.push(...resultado.itemsResueltos);
 
         if (resultado.productosNoDisponibles.length > 0) {
           await preguntarPrecioProducto(client, chatId, borrador, resultado.productosNoDisponibles[0], 'esperando_metraje');
+          return;
+        }
+
+        if (resultado.itemsResueltos.length === 0) {
+          await client.sendMessage(
+            chatId,
+            resultado.respuesta ?? 'No te entendí, LÍDER. ¿Cuánto metraje necesitas (o dime "ninguno" si no aplica)?',
+          );
           return;
         }
       }
@@ -927,6 +1061,16 @@ async function continuarFlujoCotizacion(
         // No debería pasar, pero por si la sesión quedó rara -- seguimos
         // sin trabar al jefe.
         await avanzarAFase(client, chatId, borrador, 'esperando_mano_obra');
+        return;
+      }
+
+      // Acá "olvídalo" no significa botar toda la cotización -- el jefe ya
+      // venía armando otros ítems, esto es solo sobre ESTE producto puntual
+      // que no está en el catálogo. Se salta sin agregarlo y sigue el flujo.
+      if (pareceQuiereCancelar(texto)) {
+        borrador.productoPendiente = undefined;
+        await client.sendMessage(chatId, `Listo, LÍDER, sigo sin "${pendiente.nombre}" entonces.`);
+        await avanzarAFase(client, chatId, borrador, siguienteFaseTrasProducto(pendiente.faseOrigen));
         return;
       }
 
@@ -954,12 +1098,7 @@ async function continuarFlujoCotizacion(
 
         borrador.productoPendiente = undefined;
 
-        const siguienteFase: FaseCotizacionAmg =
-          pendiente.faseOrigen === 'recolectando_items'
-            ? 'esperando_mano_obra'
-            : pendiente.faseOrigen === 'esperando_mano_obra'
-              ? 'esperando_metraje'
-              : 'esperando_tipo_cliente';
+        const siguienteFase = siguienteFaseTrasProducto(pendiente.faseOrigen);
 
         await client.sendMessage(chatId, `Listo, guardé "${producto.nombre}" a ${formatoCOP(producto.precio)}.`);
         await avanzarAFase(client, chatId, borrador, siguienteFase);

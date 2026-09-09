@@ -193,4 +193,46 @@ export function pareceRespuestaVacia(texto: string): boolean {
   );
 }
 
+const FRASES_CANCELAR_COTIZACION = [
+  'olvidalo',
+  'olvídalo',
+  'olvida eso',
+  'olvida esto',
+  'olvidemos eso',
+  'olvidemos esto',
+  'cancela',
+  'cancelar',
+  'cancelalo',
+  'cancélalo',
+  'mejor no',
+  'mejor olvidalo',
+  'mejor olvídalo',
+  'mejor dejalo',
+  'mejor déjalo',
+  'me equivoque',
+  'me equivoqué',
+  'fue un error',
+  'error mio',
+  'error mío',
+  'dejalo asi',
+  'déjalo así',
+  'borra eso',
+  'borra todo',
+  'empecemos de nuevo',
+  'empecemos otra vez',
+  'no importa ya',
+];
+
+// El jefe puede arrepentirse o equivocarse a medias de una cotización, en
+// cualquier fase del flujo guiado. Es un heurístico simple (no una llamada a
+// IA por cada mensaje del flujo, que sería lento/costoso para algo tan
+// reconocible) -- se revisa en continuarFlujoCotizacion antes de despachar
+// según la fase. Frases cortas y ambiguas ("no", "nada") se dejan afuera a
+// propósito porque ya tienen un significado propio (ver pareceRespuestaVacia:
+// "no aplica esta pregunta puntual", no "cancela toda la cotización").
+export function pareceQuiereCancelar(texto: string): boolean {
+  const t = texto.trim().toLowerCase();
+  return FRASES_CANCELAR_COTIZACION.some((frase) => t.includes(frase));
+}
+
 export { CATEGORIAS_MANO_OBRA };

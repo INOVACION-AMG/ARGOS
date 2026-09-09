@@ -2,6 +2,7 @@ import { db } from '../../db/client';
 
 export type FaseCotizacionAmg =
   | 'recolectando_items'
+  | 'esperando_cliente_final'
   | 'esperando_mano_obra'
   | 'esperando_metraje'
   | 'esperando_tipo_cliente'
@@ -24,6 +25,11 @@ export interface ItemBorradorAmg {
 export interface BorradorCotizacionAmg {
   numeroCliente: string;
   nombrePerfil?: string;
+  // Cliente FINAL de la cotización (ej. "Altavista del Portal") -- distinto
+  // del "tipo de cliente" (tarifa). Se pregunta en la fase
+  // 'esperando_cliente_final', justo después de recolectar ítems. Ver
+  // modules/clientes-finales-amg/service.ts.
+  clienteFinal?: string;
   items: ItemBorradorAmg[];
   manoObra: ItemBorradorAmg[];
   metraje: ItemBorradorAmg[];

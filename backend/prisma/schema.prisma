@@ -111,6 +111,23 @@ model SesionCotizacionAmg {
   actualizadoEn DateTime @updatedAt
 }
 
+// Historial por cliente final (el conjunto/edificio/persona real al que se le
+// hace la cotización -- ej. "Altavista del Portal", no el "tipo de cliente"
+// de TarifaClienteAmg). Se pregunta al jefe en la fase "esperando_cliente_final"
+// del flujo guiado, justo después de recolectar los ítems -- si ya existe
+// historial, se le muestra como referencia (qué y a cuánto se le cotizó la
+// última vez), y al finalizar cada cotización se actualiza con lo nuevo.
+// `items` es un JSON: array de {descripcion, cantidad, precioUnitario, fecha}.
+model ClienteFinalAmg {
+  id                String    @id @default(uuid())
+  nombreNormalizado String    @unique // minúsculas/sin tildes, ver servicio
+  nombre            String // como lo escribió el jefe la primera vez
+  items             Json
+  ultimaCotizacion  DateTime?
+  creadoEn          DateTime  @default(now())
+  actualizadoEn     DateTime  @updatedAt
+}
+
 model Usuario {
   id           String   @id @default(uuid())
   nombre       String
