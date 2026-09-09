@@ -693,7 +693,7 @@ async function resolverMensajeAmg(
     return;
   }
 
-  await avanzarAFase(client, chatId, borrador, 'esperando_mano_obra');
+  await avanzarAFase(client, chatId, borrador, 'esperando_cliente_final');
 }
 
 function pareceQuiereCotizar(texto: string): boolean {
