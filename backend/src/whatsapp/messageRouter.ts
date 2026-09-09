@@ -535,7 +535,7 @@ async function resolverMensajeAmg(
 
   const sesionExistente = await obtenerSesion(numero);
   if (sesionExistente) {
-    await continuarFlujoCotizacion(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, sesionExistente);
+    await continuarFlujoCotizacion(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, sesionExistente, imagen);
     return;
   }
 
@@ -944,6 +944,7 @@ async function continuarFlujoCotizacion(
   numero: string,
   texto: string,
   sesion: { fase: FaseCotizacionAmg; datos: BorradorCotizacionAmg },
+  imagen?: ImagenAmg,
 ) {
   const borrador = sesion.datos;
 
@@ -967,7 +968,7 @@ async function continuarFlujoCotizacion(
       const mensajeConContexto = borrador.contextoPrevio
         ? `${borrador.contextoPrevio}\nNueva respuesta del cliente: "${texto}"`
         : texto;
-      const resultado = await resolverItemsEnTexto(mensajeConContexto);
+      const resultado = await resolverItemsEnTexto(mensajeConContexto, imagen);
 
       if (resultado.tipo === 'requiere_humano') {
         await escalarAHumanoDesdeFlujo(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, resultado.motivo);
@@ -1030,7 +1031,7 @@ async function continuarFlujoCotizacion(
 
     case 'esperando_mano_obra': {
       if (!pareceRespuestaVacia(texto)) {
-        const resultado = await resolverItemsEnTexto(texto);
+        const resultado = await resolverItemsEnTexto(texto, imagen);
 
         if (resultado.tipo === 'requiere_humano') {
           await escalarAHumanoDesdeFlujo(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, resultado.motivo);
@@ -1060,7 +1061,7 @@ async function continuarFlujoCotizacion(
 
     case 'esperando_metraje': {
       if (!pareceRespuestaVacia(texto)) {
-        const resultado = await resolverItemsEnTexto(texto);
+        const resultado = await resolverItemsEnTexto(texto, imagen);
 
         if (resultado.tipo === 'requiere_humano') {
           await escalarAHumanoDesdeFlujo(client, ownJid, chatId, clienteId, nombrePerfil, numero, texto, resultado.motivo);
