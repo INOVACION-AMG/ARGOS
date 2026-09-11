@@ -800,7 +800,7 @@ function preguntaFase(fase: FaseCotizacionAmg): string {
 function formatearResumen(borrador: BorradorCotizacionAmg): string {
   const todos = [...borrador.items, ...borrador.manoObra, ...borrador.metraje];
   const ajuste = borrador.ajustePorcentaje ?? 0;
-  const aplicaIva = borrador.tipoDocumento !== 'cuenta_cobro';
+  const esCuentaCobro = borrador.tipoDocumento === 'cuenta_cobro';
 
   const lineas = todos.map((it) => {
     const precioAjustado = it.precioUnitario * (1 + ajuste / 100);
@@ -808,16 +808,20 @@ function formatearResumen(borrador: BorradorCotizacionAmg): string {
   });
 
   const subtotal = todos.reduce((acc, it) => acc + it.cantidad * it.precioUnitario * (1 + ajuste / 100), 0);
-  const iva = aplicaIva ? Math.round(subtotal * 0.19) : 0;
-  const total = Math.round(subtotal) + iva;
+  // Cuenta de cobro: el jefe pidió sumar un recargo del 30% del valor inicial
+  // además del 19% (a diferencia de factura electrónica, que solo lleva el 19%).
+  const recargo = esCuentaCobro ? Math.round(subtotal * 0.3) : 0;
+  const iva = Math.round(subtotal * 0.19);
+  const total = Math.round(subtotal) + recargo + iva;
   const tierLine = borrador.tipoCliente
     ? `\nTipo de cliente: ${borrador.tipoCliente} (${ajuste >= 0 ? '+' : ''}${ajuste}%)`
     : '';
-  const documentoLabel = borrador.tipoDocumento === 'cuenta_cobro' ? 'Cuenta de cobro (sin IVA)' : 'Factura electrónica (con IVA)';
+  const documentoLabel = esCuentaCobro ? 'Cuenta de cobro' : 'Factura electrónica';
+  const recargoLine = esCuentaCobro ? `Recargo (30%): ${formatoCOP(recargo)}\n` : '';
 
   return (
     `Resumen de la cotización, LÍDER:\n\n${lineas.join('\n')}${tierLine}\nDocumento: ${documentoLabel}\n\n` +
-    `Subtotal: ${formatoCOP(subtotal)}\nIVA: ${formatoCOP(iva)}\nTotal: ${formatoCOP(total)}\n\n` +
+    `Subtotal: ${formatoCOP(subtotal)}\n${recargoLine}IVA (19%): ${formatoCOP(iva)}\nTotal: ${formatoCOP(total)}\n\n` +
     `¿Estás de acuerdo? Si quieres ajustar algo (precio, cantidad, quitar un ítem), dímelo y te lo actualizo.`
   );
 }
@@ -910,7 +914,7 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
         valorUnitario: Math.round(it.precioUnitario * (1 + ajuste / 100)),
         tipo: it.tipo,
       })),
-      borrador.tipoDocumento !== 'cuenta_cobro',
+      borrador.tipoDocumento === 'cuenta_cobro',
     );
 
     if (!cotizacion) {
@@ -926,10 +930,12 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
       .map((i) => `- ${i.producto}: ${i.cantidad} x ${formatoCOP(i.valorUnitario)} = ${formatoCOP(i.valorTotal)}`)
       .join('\n');
 
+    const recargoLine = cotizacion.recargo > 0 ? `Recargo (30%): ${formatoCOP(cotizacion.recargo)}\n` : '';
+
     await client.sendMessage(
       chatId,
       `Cotización #${cotizacion.consecutivo} generada, LÍDER:\n${resumen}\n\n` +
-        `Subtotal: ${formatoCOP(cotizacion.subtotal)}\nIVA: ${formatoCOP(cotizacion.iva)}\nTotal: ${formatoCOP(cotizacion.total)}` +
+        `Subtotal: ${formatoCOP(cotizacion.subtotal)}\n${recargoLine}IVA (19%): ${formatoCOP(cotizacion.iva)}\nTotal: ${formatoCOP(cotizacion.total)}` +
         (cotizacion.pdfBuffer
           ? '\n\nTe adjunto el PDF.'
           : '\n\nHubo un problema generando el PDF, pero ya quedó guardada en el sistema -- te lo mando en cuanto lo resuelva.'),

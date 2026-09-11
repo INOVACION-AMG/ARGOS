@@ -21,6 +21,7 @@ export interface CotizacionAmgCreada {
   consecutivo: number;
   items: ItemCotizacionConfirmado[];
   subtotal: number;
+  recargo: number;
   iva: number;
   total: number;
   // undefined si la cotización se creó bien pero el PDF falló -- no se
@@ -130,7 +131,7 @@ export async function crearCotizacionAmgDesdeItemsResueltos(
   numeroWhatsapp: string,
   nombreCliente: string,
   items: ItemResueltoAmg[],
-  aplicaIva: boolean = true,
+  esCuentaCobro: boolean = false,
 ): Promise<CotizacionAmgCreada | null> {
   if (items.length === 0) return null;
 
@@ -151,7 +152,7 @@ export async function crearCotizacionAmgDesdeItemsResueltos(
     orden: i,
   }));
 
-  return crearCotizacionDesdeConfirmados(numeroWhatsapp, nombreCliente, confirmados, itemsPayload, aplicaIva);
+  return crearCotizacionDesdeConfirmados(numeroWhatsapp, nombreCliente, confirmados, itemsPayload, esCuentaCobro);
 }
 
 interface ItemPayloadCotizacion {
@@ -169,7 +170,7 @@ async function crearCotizacionDesdeConfirmados(
   nombreCliente: string,
   confirmados: ItemCotizacionConfirmado[],
   itemsPayload: ItemPayloadCotizacion[],
-  aplicaIva: boolean = true,
+  esCuentaCobro: boolean = false,
 ): Promise<CotizacionAmgCreada | null> {
   const comercialId = process.env.AMG_COMERCIAL_ID;
   if (!comercialId) {
@@ -181,35 +182,28 @@ async function crearCotizacionDesdeConfirmados(
   const clienteId = await obtenerOCrearClienteAmg(numeroWhatsapp, nombreCliente);
 
   const subtotal = confirmados.reduce((acc, i) => acc + i.cantidad * i.valorUnitario, 0);
-  const iva = aplicaIva ? Math.round(subtotal * IVA_RATE) : 0;
-  const total = subtotal + iva;
+  // Regla del jefe: cuenta de cobro lleva un recargo del 30% del valor
+  // inicial además del 19%; factura electrónica solo lleva el 19%.
+  const recargo = esCuentaCobro ? Math.round(subtotal * 0.3) : 0;
+  const iva = Math.round(subtotal * IVA_RATE);
+  const total = subtotal + recargo + iva;
 
   const supabase = amgSupabase();
-  const { data: cotizacion, error: errCotizacion } = await supabase
-    .from('cotizaciones')
-    .insert({
-      cliente_id: clienteId,
-      comercial_id: comercialId,
-      subtotal,
-      iva,
-      total,
-      tiempo_ejecucion: TIEMPO_EJECUCION_DEFAULT,
-    })
-    .select('id, consecutivo')
-    .single();
+  const { data: cotizaciones, error: errCotizacion } = await supabase.rpc('crear_cotizacion_con_items', {
+    p_cliente_id: clienteId,
+    p_comercial_id: comercialId,
+    p_lugar: '',
+    p_vigencia_dias: 15,
+    p_tiempo_ejecucion: TIEMPO_EJECUCION_DEFAULT,
+    p_subtotal: subtotal,
+    p_recargo: recargo,
+    p_iva: iva,
+    p_total: total,
+    p_items: itemsPayload,
+  });
+  const cotizacion = cotizaciones?.[0];
   if (errCotizacion || !cotizacion) {
     throw new Error(`No se pudo crear la cotización en AMG: ${errCotizacion?.message}`);
-  }
-
-  const { error: errItems } = await supabase
-    .from('cotizacion_items')
-    .insert(itemsPayload.map((it) => ({ ...it, cotizacion_id: cotizacion.id })));
-  if (errItems) {
-    // Sin transacción entre los dos inserts (igual que en AMG-LEGION) --
-    // revertimos el encabezado si fallan los ítems para no dejar una
-    // cotización fantasma sin nada adentro.
-    await supabase.from('cotizaciones').delete().eq('id', cotizacion.id);
-    throw new Error(`No se pudieron guardar los ítems de la cotización en AMG: ${errItems.message}`);
   }
 
   const consecutivo = cotizacion.consecutivo as number;
@@ -229,9 +223,9 @@ async function crearCotizacionDesdeConfirmados(
         valorUnitario: c.valorUnitario,
       })),
       subtotal,
+      recargo,
       iva,
       total,
-      aplicaIva,
     });
 
     const pdfPath = `${cotizacion.id}/cotizacion.pdf`;
@@ -254,6 +248,7 @@ async function crearCotizacionDesdeConfirmados(
     consecutivo,
     items: confirmados,
     subtotal,
+    recargo,
     iva,
     total,
     pdfBuffer,

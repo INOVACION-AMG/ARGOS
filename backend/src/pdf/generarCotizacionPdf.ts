@@ -8,10 +8,10 @@ export interface DatosCotizacionPdf {
   asesor: string;
   items: ItemPdf[];
   subtotal: number;
+  recargo?: number;
   iva: number;
   total: number;
   lugar?: string;
-  aplicaIva?: boolean;
 }
 
 export async function generarCotizacionPdfBuffer(datos: DatosCotizacionPdf): Promise<Buffer> {
@@ -28,9 +28,9 @@ export async function generarCotizacionPdfBuffer(datos: DatosCotizacionPdf): Pro
     tiempoEjecucion: TIEMPO_EJECUCION_DEFAULT,
     items: datos.items,
     subtotal: datos.subtotal,
+    recargo: datos.recargo,
     iva: datos.iva,
     total: datos.total,
-    aplicaIva: datos.aplicaIva,
   });
 
   // instancia.toBuffer() no devuelve un Buffer ya armado -- devuelve el

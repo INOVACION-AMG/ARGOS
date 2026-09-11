@@ -236,9 +236,9 @@ export interface CotizacionPdfDocumentProps {
   tiempoEjecucion: string;
   items: ItemPdf[];
   subtotal: number;
+  recargo?: number;
   iva: number;
   total: number;
-  aplicaIva?: boolean;
 }
 
 export default function CotizacionPdfDocument({
@@ -251,9 +251,9 @@ export default function CotizacionPdfDocument({
   tiempoEjecucion,
   items,
   subtotal,
+  recargo = 0,
   iva,
   total,
-  aplicaIva = true,
 }: CotizacionPdfDocumentProps) {
   const suministros = items.filter((it) => it.tipo === 'suministro');
   const manoObra = items.filter((it) => it.tipo === 'mano_obra');
@@ -287,8 +287,14 @@ export default function CotizacionPdfDocument({
             <Text style={styles.totalsLabel}>VALOR BASE</Text>
             <Text style={styles.totalsValue}>{formatCOP(subtotal)}</Text>
           </View>
+          {recargo > 0 && (
+            <View style={styles.totalsRow}>
+              <Text style={styles.totalsLabel}>RECARGO 30%</Text>
+              <Text style={styles.totalsValue}>{formatCOP(recargo)}</Text>
+            </View>
+          )}
           <View style={styles.totalsRow}>
-            <Text style={styles.totalsLabel}>{aplicaIva ? 'VALOR IVA 19%' : 'VALOR IVA (cuenta de cobro, no aplica)'}</Text>
+            <Text style={styles.totalsLabel}>VALOR IVA 19%</Text>
             <Text style={styles.totalsValue}>{formatCOP(iva)}</Text>
           </View>
           <View style={[styles.totalsRow, styles.totalsRowFinal]}>
