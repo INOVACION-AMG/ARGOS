@@ -146,10 +146,11 @@ export async function interpretarRespuestaTarifa(texto: string, tipoCliente: str
 
 const TOOL_NAME_TIPO_DOCUMENTO = 'responder_tipo_documento';
 
-// Se usa en la fase "esperando_tipo_documento": define si la cotización
-// lleva IVA (factura) o no (cuenta de cobro) -- afecta el total real, así
-// que se interpreta con IA en vez de buscar palabras exactas, para aguantar
-// como lo diga el jefe ("con factura", "es cuenta de cobro", "sin iva", etc).
+// Se usa en la fase "esperando_tipo_documento": define si la cotización va
+// como cuenta de cobro (lleva recargo 30% + IVA 19%) o factura electrónica
+// (solo IVA 19%, sin recargo) -- ambas llevan IVA, la diferencia real es el
+// recargo. Se interpreta con IA en vez de buscar palabras exactas, para
+// aguantar como lo diga el jefe ("con factura", "es cuenta de cobro", etc).
 export async function interpretarTipoDocumento(texto: string): Promise<'cuenta_cobro' | 'factura' | undefined> {
   const response = await anthropic.messages.create({
     model: 'claude-sonnet-5',
@@ -159,14 +160,14 @@ export async function interpretarTipoDocumento(texto: string): Promise<'cuenta_c
       {
         name: TOOL_NAME_TIPO_DOCUMENTO,
         description:
-          'Se le preguntó al jefe de AMG si esta cotización va a ir como "cuenta de cobro" (no lleva IVA) o "factura" (electrónica, lleva IVA 19%). Determina cuál de las dos dijo.',
+          'Se le preguntó al jefe de AMG si esta cotización va a ir como "cuenta de cobro" (lleva un recargo adicional del 30% más IVA del 19%) o "factura electrónica" (solo IVA del 19%, sin recargo). Determina cuál de las dos dijo.',
         input_schema: {
           type: 'object',
           properties: {
             tipo: {
               type: 'string',
               enum: ['cuenta_cobro', 'factura', 'no_entendido'],
-              description: '"cuenta_cobro" o "factura" si lo dijo claro (aunque sea indirecto, ej. "sin iva" = cuenta_cobro, "con iva" o "electrónica" = factura). "no_entendido" si no quedó claro.',
+              description: '"cuenta_cobro" o "factura" si lo dijo claro (aunque sea indirecto, ej. "con recargo" = cuenta_cobro, "electrónica sin recargo" = factura). "no_entendido" si no quedó claro.',
             },
           },
           required: ['tipo'],

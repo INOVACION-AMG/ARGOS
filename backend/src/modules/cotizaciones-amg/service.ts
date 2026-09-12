@@ -181,7 +181,12 @@ async function crearCotizacionDesdeConfirmados(
 
   const clienteId = await obtenerOCrearClienteAmg(numeroWhatsapp, nombreCliente);
 
-  const subtotal = confirmados.reduce((acc, i) => acc + i.cantidad * i.valorUnitario, 0);
+  // Suma valorTotal (ya redondeado por ítem), no cantidad*valorUnitario en
+  // crudo -- con cantidades fraccionarias (metraje) esas dos cosas pueden
+  // diferir por unos pesos, y este subtotal es el que de verdad se guarda y
+  // se factura, así que debe coincidir con lo que ya se le mostró al jefe en
+  // el resumen (ver formatearResumen en whatsapp/messageRouter.ts).
+  const subtotal = confirmados.reduce((acc, i) => acc + i.valorTotal, 0);
   // Regla del jefe: cuenta de cobro lleva un recargo del 30% del valor
   // inicial además del 19%; factura electrónica solo lleva el 19%.
   const recargo = esCuentaCobro ? Math.round(subtotal * 0.3) : 0;

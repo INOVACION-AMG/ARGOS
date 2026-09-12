@@ -227,7 +227,10 @@ async function estaAutorizadoAmg(msg: Message, chatId: string): Promise<boolean>
     .map((n) => soloDigitos(n))
     .filter(Boolean);
 
-  if (autorizados.length === 0) return true; // sin lista configurada, sin restricción
+  // Sin lista configurada, se niega por defecto (fail-closed) -- ver el
+  // chequeo de arranque en config/modo.ts, que ya no debería dejar llegar
+  // hasta acá con la lista vacía, pero esto es la última barrera.
+  if (autorizados.length === 0) return false;
 
   const numeroChat = soloDigitos(chatId.split('@')[0]);
   if (autorizados.includes(numeroChat)) return true;
@@ -791,7 +794,7 @@ function preguntaFase(fase: FaseCotizacionAmg): string {
     case 'esperando_tipo_cliente':
       return '¿Para qué tipo de cliente es esta cotización? (preferencial / amigo / integrador / sub / final / final vip)';
     case 'esperando_tipo_documento':
-      return '¿Esta cotización va como cuenta de cobro (sin IVA) o factura electrónica (con IVA 19%), LÍDER?';
+      return '¿Esta cotización va como cuenta de cobro (recargo 30% + IVA 19%) o factura electrónica (solo IVA 19%), LÍDER?';
     default:
       return '';
   }
@@ -802,17 +805,28 @@ function formatearResumen(borrador: BorradorCotizacionAmg): string {
   const ajuste = borrador.ajustePorcentaje ?? 0;
   const esCuentaCobro = borrador.tipoDocumento === 'cuenta_cobro';
 
-  const lineas = todos.map((it) => {
-    const precioAjustado = it.precioUnitario * (1 + ajuste / 100);
-    return `- ${it.nombre}: ${it.cantidad} x ${formatoCOP(precioAjustado)} = ${formatoCOP(precioAjustado * it.cantidad)}`;
+  // Se redondea el precio unitario ajustado y el total por ítem ACÁ MISMO --
+  // exactamente como lo vuelve a hacer finalizarCotizacion()/service.ts al
+  // crear la cotización real -- para que el subtotal de este resumen nunca
+  // quede unos pesos distinto del que termina cobrándose (con metraje o
+  // ajustes por tipo de cliente, sumar precios sin redondear por ítem podía
+  // desincronizar el resumen del total final).
+  const itemsCalculados = todos.map((it) => {
+    const valorUnitario = Math.round(it.precioUnitario * (1 + ajuste / 100));
+    const valorTotal = Math.round(it.cantidad * valorUnitario);
+    return { nombre: it.nombre, cantidad: it.cantidad, valorUnitario, valorTotal };
   });
 
-  const subtotal = todos.reduce((acc, it) => acc + it.cantidad * it.precioUnitario * (1 + ajuste / 100), 0);
+  const lineas = itemsCalculados.map(
+    (it) => `- ${it.nombre}: ${it.cantidad} x ${formatoCOP(it.valorUnitario)} = ${formatoCOP(it.valorTotal)}`,
+  );
+
+  const subtotal = itemsCalculados.reduce((acc, it) => acc + it.valorTotal, 0);
   // Cuenta de cobro: el jefe pidió sumar un recargo del 30% del valor inicial
   // además del 19% (a diferencia de factura electrónica, que solo lleva el 19%).
   const recargo = esCuentaCobro ? Math.round(subtotal * 0.3) : 0;
   const iva = Math.round(subtotal * 0.19);
-  const total = Math.round(subtotal) + recargo + iva;
+  const total = subtotal + recargo + iva;
   const tierLine = borrador.tipoCliente
     ? `\nTipo de cliente: ${borrador.tipoCliente} (${ajuste >= 0 ? '+' : ''}${ajuste}%)`
     : '';
@@ -901,8 +915,10 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
   const ajuste = borrador.ajustePorcentaje ?? 0;
   const todos = [...borrador.items, ...borrador.manoObra, ...borrador.metraje];
 
-  await borrarSesion(borrador.numeroCliente);
-
+  // La sesión se borra solo si la cotización quedó creada (o si no había
+  // nada que cotizar) -- si Supabase/la red fallan a mitad de camino, el
+  // borrador se conserva para poder reintentar sin que el jefe tenga que
+  // rehacer todo el flujo desde cero (ver el catch más abajo).
   try {
     const cotizacion = await crearCotizacionAmgDesdeItemsResueltos(
       borrador.numeroCliente,
@@ -918,9 +934,12 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
     );
 
     if (!cotizacion) {
+      await borrarSesion(borrador.numeroCliente);
       await client.sendMessage(chatId, 'No quedó ningún ítem para cotizar, LÍDER -- si quieres, empecemos de nuevo diciéndome qué necesitas.');
       return;
     }
+
+    await borrarSesion(borrador.numeroCliente);
 
     console.log(
       `[AMG] Cotización #${cotizacion.consecutivo} creada (flujo guiado) para ${borrador.numeroCliente} (total ${formatoCOP(cotizacion.total)}, pdf: ${cotizacion.pdfBuffer ? 'sí' : 'no'})`,
@@ -962,11 +981,16 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
     }
   } catch (err) {
     console.error('Error finalizando cotización del flujo guiado AMG:', err);
-    await client.sendMessage(chatId, 'Tuve un problema generando la cotización final, LÍDER. Ya avisé al equipo, te la confirman manualmente.');
+    // El borrador NO se borró (ver arriba) -- sigue en 'esperando_aprobacion',
+    // así que responder "sí" otra vez reintenta sin perder nada.
+    await client.sendMessage(
+      chatId,
+      'Tuve un problema generando la cotización final, LÍDER. No se perdió nada -- escríbeme "sí" otra vez para reintentarlo, o dime qué ajustar.',
+    );
     await enviarAvisoOwner(
       client,
       ownJid,
-      `⚠️ [AMG] Falló la creación final de una cotización del flujo guiado para ${borrador.numeroCliente}. Revisa manualmente.`,
+      `⚠️ [AMG] Falló la creación final de una cotización del flujo guiado para ${borrador.numeroCliente}. El borrador se conservó para reintentar.`,
     );
   }
 }
@@ -1296,7 +1320,7 @@ async function continuarFlujoCotizacion(
     case 'esperando_tipo_documento': {
       const tipoDocumento = await interpretarTipoDocumento(texto);
       if (!tipoDocumento) {
-        await client.sendMessage(chatId, 'No te entendí, LÍDER -- ¿es cuenta de cobro (sin IVA) o factura electrónica (con IVA 19%)?');
+        await client.sendMessage(chatId, 'No te entendí, LÍDER -- ¿es cuenta de cobro (recargo 30% + IVA 19%) o factura electrónica (solo IVA 19%)?');
         return;
       }
       borrador.tipoDocumento = tipoDocumento;

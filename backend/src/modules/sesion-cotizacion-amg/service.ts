@@ -42,8 +42,9 @@ export interface BorradorCotizacionAmg {
   metraje: ItemBorradorAmg[];
   tipoCliente?: string;
   ajustePorcentaje?: number;
-  // 'cuenta_cobro' no lleva IVA, 'factura' sí (19%) -- se pregunta siempre,
-  // no se asume, porque cambia el total real que paga el cliente.
+  // 'cuenta_cobro' lleva recargo del 30% además del IVA del 19%; 'factura'
+  // solo lleva el IVA del 19% -- se pregunta siempre, no se asume, porque
+  // cambia el total real que paga el cliente.
   tipoDocumento?: 'cuenta_cobro' | 'factura';
   // Cuando se detectó un tipo de cliente nuevo (sin tarifa guardada) y se le
   // preguntó al jefe el % de ajuste -- mientras esto tenga valor, la fase
