@@ -195,7 +195,7 @@ export async function interpretarMensajeClienteAmg(
 // forma no calza, se trata como si no hubiera coincidido nada (mismo
 // fallback que "no encontré nada en el catálogo"), nunca se lanza el dato
 // crudo al resto del flujo.
-function validarInterpretacionAmg(input: unknown, catalogo: ProductoCatalogoAmg[]): InterpretacionMensajeAmg {
+export function validarInterpretacionAmg(input: unknown, catalogo: ProductoCatalogoAmg[]): InterpretacionMensajeAmg {
   const idsValidos = new Set(catalogo.map((p) => p.id));
   const datos = (input ?? {}) as Partial<InterpretacionMensajeAmg>;
 

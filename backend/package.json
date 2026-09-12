@@ -9,7 +9,9 @@
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "tsx --test src/modules/cotizaciones-amg/service.test.ts src/whatsapp/messageRouter.unit.test.ts src/ai/flujoCotizacionAmg.test.ts src/ai/ordersAmg.test.ts",
+    "test:integration": "tsx --test src/whatsapp/messageRouter.integration.test.ts",
     "postinstall": "node scripts/fix-react-pdf-hyphenate.js"
   },
   "keywords": [],

@@ -74,7 +74,30 @@ export async function interpretarAjusteOAprobacion(
 
   const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
   if (!toolUse) return { aprobado: false, ajustes: [] };
-  return toolUse.input as RespuestaAprobacion;
+  return validarRespuestaAprobacion(toolUse.input);
+}
+
+// El schema de la tool-call ya obliga tipos básicos, pero no garantiza en
+// runtime que cada ajuste tenga forma correcta -- un ajuste malformado (ej.
+// sin "nombre", o con un precio que no es number) se descarta en vez de
+// dejarlo pasar a aplicarAjustes() con esa forma inesperada.
+export function validarRespuestaAprobacion(input: unknown): RespuestaAprobacion {
+  const datos = (input ?? {}) as Partial<RespuestaAprobacion>;
+  const aprobado = datos.aprobado === true;
+
+  const ajustes = Array.isArray(datos.ajustes)
+    ? datos.ajustes.filter((a): a is AjusteItem => {
+        if (typeof a !== 'object' || a === null) return false;
+        const ajuste = a as Partial<AjusteItem>;
+        if (typeof ajuste.nombre !== 'string' || ajuste.nombre.trim() === '') return false;
+        if (ajuste.nuevoPrecioUnitario !== undefined && typeof ajuste.nuevoPrecioUnitario !== 'number') return false;
+        if (ajuste.nuevaCantidad !== undefined && typeof ajuste.nuevaCantidad !== 'number') return false;
+        if (ajuste.eliminar !== undefined && typeof ajuste.eliminar !== 'boolean') return false;
+        return true;
+      })
+    : [];
+
+  return { aprobado, ajustes };
 }
 
 export interface ActualizacionManoObra {
@@ -141,7 +164,28 @@ export async function interpretarRespuestaTarifa(texto: string, tipoCliente: str
 
   const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
   if (!toolUse) return { actualizacionesManoObra: [] };
-  return toolUse.input as RespuestaTarifa;
+  return validarRespuestaTarifa(toolUse.input);
+}
+
+// Estos precios pueden terminar escritos como el precio REAL y permanente
+// de un producto del catálogo (ver aplicarActualizacionesManoObra en
+// messageRouter.ts) -- una forma inesperada (precio como string, sin
+// nombre) se descarta acá antes de llegar tan lejos.
+export function validarRespuestaTarifa(input: unknown): RespuestaTarifa {
+  const datos = (input ?? {}) as Partial<RespuestaTarifa>;
+
+  const ajustePorcentaje =
+    typeof datos.ajustePorcentaje === 'number' && Number.isFinite(datos.ajustePorcentaje) ? datos.ajustePorcentaje : undefined;
+
+  const actualizacionesManoObra = Array.isArray(datos.actualizacionesManoObra)
+    ? datos.actualizacionesManoObra.filter((a): a is ActualizacionManoObra => {
+        if (typeof a !== 'object' || a === null) return false;
+        const act = a as Partial<ActualizacionManoObra>;
+        return typeof act.nombre === 'string' && act.nombre.trim() !== '' && typeof act.precio === 'number' && Number.isFinite(act.precio);
+      })
+    : [];
+
+  return { ajustePorcentaje, actualizacionesManoObra };
 }
 
 const TOOL_NAME_TIPO_DOCUMENTO = 'responder_tipo_documento';
@@ -265,7 +309,15 @@ export async function interpretarSolicitudHistorial(texto: string): Promise<Soli
   });
 
   const toolUse = response.content.find((b): b is Anthropic.ToolUseBlock => b.type === 'tool_use');
-  return (toolUse?.input as SolicitudHistorialCotizacion | undefined) ?? { esSolicitudDeHistorial: false };
+  return validarSolicitudHistorial(toolUse?.input);
+}
+
+export function validarSolicitudHistorial(input: unknown): SolicitudHistorialCotizacion {
+  const datos = (input ?? {}) as Partial<SolicitudHistorialCotizacion>;
+  return {
+    esSolicitudDeHistorial: datos.esSolicitudDeHistorial === true,
+    nombreCliente: typeof datos.nombreCliente === 'string' && datos.nombreCliente.trim() !== '' ? datos.nombreCliente : undefined,
+  };
 }
 
 // Filtro barato antes de gastar una llamada a IA -- solo dispara la

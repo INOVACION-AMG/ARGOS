@@ -913,10 +913,10 @@ async function avanzarAFase(client: Client, chatId: string, borrador: BorradorCo
 const MAX_PRECIO_UNITARIO = 500_000_000; // $500 millones COP
 const MAX_CANTIDAD = 100_000;
 
-function esPrecioValido(valor: number): boolean {
+export function esPrecioValido(valor: number): boolean {
   return Number.isFinite(valor) && valor >= 0 && valor <= MAX_PRECIO_UNITARIO;
 }
-function esCantidadValida(valor: number): boolean {
+export function esCantidadValida(valor: number): boolean {
   return Number.isFinite(valor) && valor > 0 && valor <= MAX_CANTIDAD;
 }
 
@@ -925,7 +925,7 @@ function esCantidadValida(valor: number): boolean {
 // ajuste real cambia lo que se va a cobrar, así que no puede compartir
 // llave con un intento anterior que ya haya creado la cotización con los
 // valores viejos (ver hallazgo de Codex 2026-09-12).
-function aplicarAjustes(
+export function aplicarAjustes(
   borrador: BorradorCotizacionAmg,
   ajustes: { nombre: string; nuevoPrecioUnitario?: number; nuevaCantidad?: number; eliminar?: boolean }[],
 ): boolean {
@@ -972,7 +972,7 @@ function aplicarAjustes(
 // precio unitario, y crea la cotización real (con PDF) -- mismo mecanismo
 // de siempre, solo que los ítems ya vienen resueltos del borrador en vez de
 // buscarse de nuevo en el catálogo.
-async function finalizarCotizacion(client: Client, ownJid: string, chatId: string, borrador: BorradorCotizacionAmg) {
+export async function finalizarCotizacion(client: Client, ownJid: string, chatId: string, borrador: BorradorCotizacionAmg) {
   const ajuste = borrador.ajustePorcentaje ?? 0;
   const todos = [...borrador.items, ...borrador.manoObra, ...borrador.metraje];
 
