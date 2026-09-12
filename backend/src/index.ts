@@ -1,7 +1,6 @@
 import 'dotenv/config';
-import { connectWhatsApp, getSocket } from './whatsapp/connection';
+import { connectWhatsApp } from './whatsapp/connection';
 import { buildServer } from './api/server';
-import { iniciarProgramador } from './jobs/scheduler';
 
 async function main() {
   const app = buildServer();
@@ -13,7 +12,6 @@ async function main() {
 
   await connectWhatsApp(() => {
     console.log('Listo: el bot ya está enlazado a tu WhatsApp.');
-    iniciarProgramador(getSocket);
   });
 }
 
