@@ -185,5 +185,44 @@ export async function interpretarMensajeClienteAmg(
 
   if (!toolUse) return { tipo: 'consulta', items: [], productosNoDisponibles: [] };
 
-  return toolUse.input as InterpretacionMensajeAmg;
+  return validarInterpretacionAmg(toolUse.input, catalogo);
+}
+
+// El schema de la tool-call ya restringe bastante (enum, required), pero es
+// solo lo que Anthropic promete devolver, no una garantía en runtime -- un
+// campo con la forma equivocada (ej. cantidad como string, un productoId
+// que no está en el catálogo) no debería llegar a crear un ítem real. Si la
+// forma no calza, se trata como si no hubiera coincidido nada (mismo
+// fallback que "no encontré nada en el catálogo"), nunca se lanza el dato
+// crudo al resto del flujo.
+function validarInterpretacionAmg(input: unknown, catalogo: ProductoCatalogoAmg[]): InterpretacionMensajeAmg {
+  const idsValidos = new Set(catalogo.map((p) => p.id));
+  const datos = (input ?? {}) as Partial<InterpretacionMensajeAmg>;
+
+  const tipo: TipoMensajeClienteAmg =
+    datos.tipo === 'cotizacion' || datos.tipo === 'consulta' || datos.tipo === 'requiere_humano' ? datos.tipo : 'consulta';
+
+  const items = Array.isArray(datos.items)
+    ? datos.items.filter(
+        (it): it is ItemPedidoAmg =>
+          typeof it === 'object' &&
+          it !== null &&
+          typeof (it as ItemPedidoAmg).productoId === 'string' &&
+          idsValidos.has((it as ItemPedidoAmg).productoId) &&
+          Number.isFinite((it as ItemPedidoAmg).cantidad) &&
+          (it as ItemPedidoAmg).cantidad > 0,
+      )
+    : [];
+
+  const productosNoDisponibles = Array.isArray(datos.productosNoDisponibles)
+    ? datos.productosNoDisponibles.filter((p): p is string => typeof p === 'string')
+    : [];
+
+  return {
+    tipo,
+    items,
+    productosNoDisponibles,
+    motivo: typeof datos.motivo === 'string' ? datos.motivo : undefined,
+    respuesta: typeof datos.respuesta === 'string' ? datos.respuesta : undefined,
+  };
 }

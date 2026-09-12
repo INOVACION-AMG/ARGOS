@@ -907,14 +907,30 @@ async function avanzarAFase(client: Client, chatId: string, borrador: BorradorCo
 // NaN, o un valor absurdamente alto). Un valor inválido aquí terminaría en
 // el resumen que ve el jefe (o, en el peor caso, en una cotización real), así
 // que se descarta el ajuste puntual en vez de aplicarlo a ciegas.
+// Topes de sanidad, no límites de negocio reales -- solo para atrapar una
+// alucinación numérica de la IA (ej. un cero de más), no para restringir una
+// cotización grande legítima.
+const MAX_PRECIO_UNITARIO = 500_000_000; // $500 millones COP
+const MAX_CANTIDAD = 100_000;
+
 function esPrecioValido(valor: number): boolean {
-  return Number.isFinite(valor) && valor >= 0;
+  return Number.isFinite(valor) && valor >= 0 && valor <= MAX_PRECIO_UNITARIO;
 }
 function esCantidadValida(valor: number): boolean {
-  return Number.isFinite(valor) && valor > 0;
+  return Number.isFinite(valor) && valor > 0 && valor <= MAX_CANTIDAD;
 }
 
-function aplicarAjustes(borrador: BorradorCotizacionAmg, ajustes: { nombre: string; nuevoPrecioUnitario?: number; nuevaCantidad?: number; eliminar?: boolean }[]) {
+// Devuelve true si de verdad modificó algo del borrador -- el llamador lo
+// usa para saber si debe rotar la idempotencyKey (ver avanzarAFase): un
+// ajuste real cambia lo que se va a cobrar, así que no puede compartir
+// llave con un intento anterior que ya haya creado la cotización con los
+// valores viejos (ver hallazgo de Codex 2026-09-12).
+function aplicarAjustes(
+  borrador: BorradorCotizacionAmg,
+  ajustes: { nombre: string; nuevoPrecioUnitario?: number; nuevaCantidad?: number; eliminar?: boolean }[],
+): boolean {
+  let huboCambios = false;
+
   for (const ajuste of ajustes) {
     const buckets = [borrador.items, borrador.manoObra, borrador.metraje];
     for (const bucket of buckets) {
@@ -926,19 +942,30 @@ function aplicarAjustes(borrador: BorradorCotizacionAmg, ajustes: { nombre: stri
 
       if (ajuste.eliminar) {
         bucket.splice(idx, 1);
+        huboCambios = true;
       } else {
         if (ajuste.nuevoPrecioUnitario !== undefined) {
-          if (esPrecioValido(ajuste.nuevoPrecioUnitario)) bucket[idx].precioUnitario = ajuste.nuevoPrecioUnitario;
-          else console.warn(`[AMG] Ajuste de precio inválido ignorado para "${ajuste.nombre}":`, ajuste.nuevoPrecioUnitario);
+          if (esPrecioValido(ajuste.nuevoPrecioUnitario)) {
+            bucket[idx].precioUnitario = ajuste.nuevoPrecioUnitario;
+            huboCambios = true;
+          } else {
+            console.warn(`[AMG] Ajuste de precio inválido ignorado para "${ajuste.nombre}":`, ajuste.nuevoPrecioUnitario);
+          }
         }
         if (ajuste.nuevaCantidad !== undefined) {
-          if (esCantidadValida(ajuste.nuevaCantidad)) bucket[idx].cantidad = ajuste.nuevaCantidad;
-          else console.warn(`[AMG] Ajuste de cantidad inválido ignorado para "${ajuste.nombre}":`, ajuste.nuevaCantidad);
+          if (esCantidadValida(ajuste.nuevaCantidad)) {
+            bucket[idx].cantidad = ajuste.nuevaCantidad;
+            huboCambios = true;
+          } else {
+            console.warn(`[AMG] Ajuste de cantidad inválido ignorado para "${ajuste.nombre}":`, ajuste.nuevaCantidad);
+          }
         }
       }
       break;
     }
   }
+
+  return huboCambios;
 }
 
 // Combina ítems + mano de obra + metraje, aplica el ajuste de tarifa a cada
@@ -1405,7 +1432,13 @@ async function continuarFlujoCotizacion(
         return;
       }
 
-      aplicarAjustes(borrador, respuesta.ajustes);
+      const huboCambios = aplicarAjustes(borrador, respuesta.ajustes);
+      // Un ajuste real cambia lo que se va a cobrar -- no puede reutilizar
+      // la llave de un intento anterior (que pudo haber creado ya la
+      // cotización con los valores viejos si Supabase respondió pero
+      // Argos perdió la respuesta). avanzarAFase genera una nueva porque
+      // queda undefined acá.
+      if (huboCambios) borrador.idempotencyKey = undefined;
       await avanzarAFase(client, chatId, borrador, 'esperando_aprobacion');
       return;
     }
