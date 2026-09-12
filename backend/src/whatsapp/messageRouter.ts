@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { MessageMedia, type Client, type Message } from './greenApi';
 import { extraerPreciosDeImagen } from '../ai/prices';
 import { interpretarMensajeCliente } from '../ai/orders';
@@ -413,6 +414,10 @@ async function manejarComandoAgregar(client: Client, ownJid: string, textoComand
       solicitud.nombrePerfil ?? `Cliente ${solicitud.numeroCliente}`,
       [{ productoId: producto.id, cantidad: solicitud.cantidad }],
       [producto],
+      // solicitud.id es estable y no cambia si este handler se reprocesa
+      // (ej. Green API redelivera la notificación) -- protege contra crear
+      // esta misma cotización dos veces.
+      solicitud.id,
     );
 
     if (!cotizacion) return;
@@ -880,6 +885,13 @@ async function aplicarActualizacionesManoObra(
 // Guarda la sesión en la fase nueva y manda la pregunta correspondiente (o
 // el resumen, si ya se llegó a la fase de aprobación).
 async function avanzarAFase(client: Client, chatId: string, borrador: BorradorCotizacionAmg, nuevaFase: FaseCotizacionAmg) {
+  if (nuevaFase === 'esperando_aprobacion') {
+    // Se genera UNA sola vez acá (antes de que el jefe pueda aprobar) y se
+    // persiste -- si el ajuste o la aprobación se reintentan, ??= evita
+    // generar una llave nueva y perder la protección contra duplicados.
+    borrador.idempotencyKey ??= randomUUID();
+  }
+
   await guardarSesion(borrador.numeroCliente, nuevaFase, borrador);
 
   if (nuevaFase === 'esperando_aprobacion') {
@@ -937,6 +949,16 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
   const ajuste = borrador.ajustePorcentaje ?? 0;
   const todos = [...borrador.items, ...borrador.manoObra, ...borrador.metraje];
 
+  // Defensivo: una sesión que ya estaba en 'esperando_aprobacion' de antes de
+  // este cambio no traería la llave todavía -- se genera y persiste UNA sola
+  // vez acá (nunca en cada intento; avanzarAFase ya la genera para toda
+  // sesión nueva que llegue a esa fase).
+  if (!borrador.idempotencyKey) {
+    borrador.idempotencyKey = randomUUID();
+    await guardarSesion(borrador.numeroCliente, 'esperando_aprobacion', borrador);
+  }
+  const idempotencyKey = borrador.idempotencyKey;
+
   // La sesión se borra solo si la cotización quedó creada (o si no había
   // nada que cotizar) -- si Supabase/la red fallan a mitad de camino, el
   // borrador se conserva para poder reintentar sin que el jefe tenga que
@@ -963,6 +985,7 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
         tipo: it.tipo,
       })),
       borrador.tipoDocumento === 'cuenta_cobro',
+      idempotencyKey,
     );
 
     if (!cotizacion) {

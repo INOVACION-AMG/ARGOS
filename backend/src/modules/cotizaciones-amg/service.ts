@@ -137,6 +137,11 @@ export async function crearCotizacionAmg(
   nombreCliente: string,
   items: ItemPedidoAmg[],
   catalogo: ProductoCatalogoAmg[],
+  // Llave estable para que un reintento (ej. Green API redelivera el mismo
+  // mensaje) no cree una segunda cotización -- usar un id que ya exista y no
+  // cambie entre reintentos (ej. SolicitudProductoAmg.id), nunca un
+  // randomUUID() generado de nuevo en cada llamada.
+  idempotencyKey: string,
 ): Promise<CotizacionAmgCreada | null> {
   const confirmados: ItemCotizacionConfirmado[] = [];
   const itemsPayload: ItemPayloadCotizacion[] = [];
@@ -165,7 +170,7 @@ export async function crearCotizacionAmg(
 
   if (confirmados.length === 0) return null;
 
-  return crearCotizacionDesdeConfirmados(numeroWhatsapp, nombreCliente, confirmados, itemsPayload);
+  return crearCotizacionDesdeConfirmados(numeroWhatsapp, nombreCliente, confirmados, itemsPayload, false, idempotencyKey);
 }
 
 export interface ItemResueltoAmg {
@@ -184,7 +189,10 @@ export async function crearCotizacionAmgDesdeItemsResueltos(
   numeroWhatsapp: string,
   nombreCliente: string,
   items: ItemResueltoAmg[],
-  esCuentaCobro: boolean = false,
+  esCuentaCobro: boolean,
+  // Generada UNA sola vez por intento de finalización y persistida en
+  // BorradorCotizacionAmg.idempotencyKey -- nunca generar una nueva acá.
+  idempotencyKey: string,
 ): Promise<CotizacionAmgCreada | null> {
   if (items.length === 0) return null;
 
@@ -205,7 +213,7 @@ export async function crearCotizacionAmgDesdeItemsResueltos(
     orden: i,
   }));
 
-  return crearCotizacionDesdeConfirmados(numeroWhatsapp, nombreCliente, confirmados, itemsPayload, esCuentaCobro);
+  return crearCotizacionDesdeConfirmados(numeroWhatsapp, nombreCliente, confirmados, itemsPayload, esCuentaCobro, idempotencyKey);
 }
 
 interface ItemPayloadCotizacion {
@@ -224,6 +232,7 @@ async function crearCotizacionDesdeConfirmados(
   confirmados: ItemCotizacionConfirmado[],
   itemsPayload: ItemPayloadCotizacion[],
   esCuentaCobro: boolean = false,
+  idempotencyKey?: string,
 ): Promise<CotizacionAmgCreada | null> {
   const comercialId = process.env.AMG_COMERCIAL_ID;
   if (!comercialId) {
@@ -247,6 +256,10 @@ async function crearCotizacionDesdeConfirmados(
   const total = subtotal + recargo + iva;
 
   const supabase = amgSupabase();
+  // Con idempotencyKey se llama a la sobrecarga de 11 argumentos (migración
+  // 0013 en AMG-LEGION), que reutiliza una cotización ya creada con la misma
+  // llave en vez de duplicarla. Sin ella (llamadores que todavía no la
+  // tengan), Postgres resuelve la sobrecarga original de 10 argumentos.
   const { data: cotizaciones, error: errCotizacion } = await supabase.rpc('crear_cotizacion_con_items', {
     p_cliente_id: clienteId,
     p_comercial_id: comercialId,
@@ -258,6 +271,7 @@ async function crearCotizacionDesdeConfirmados(
     p_iva: iva,
     p_total: total,
     p_items: itemsPayload,
+    ...(idempotencyKey ? { p_idempotency_key: idempotencyKey } : {}),
   });
   const cotizacion = cotizaciones?.[0];
   if (errCotizacion || !cotizacion) {

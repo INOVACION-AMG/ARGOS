@@ -58,6 +58,12 @@ export interface BorradorCotizacionAmg {
   // desde `faseOrigen` (la fase en la que se detectó el faltante).
   productoPendiente?: { nombre: string; cantidad: number; faseOrigen: FaseCotizacionAmg };
   productosNoDisponibles: string[];
+  // Se genera UNA sola vez (ver avanzarAFase, al entrar a
+  // 'esperando_aprobacion') y se reenvía igual en cada reintento de
+  // finalizarCotizacion() -- así, si Supabase crea la cotización pero la
+  // respuesta se pierde en el camino, un reintento con la misma llave
+  // devuelve la cotización ya creada en vez de duplicarla.
+  idempotencyKey?: string;
 }
 
 export function borradorVacio(numeroCliente: string, nombrePerfil?: string): BorradorCotizacionAmg {
