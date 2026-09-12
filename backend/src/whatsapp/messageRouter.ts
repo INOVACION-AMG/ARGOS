@@ -29,7 +29,12 @@ import {
   reanudarBot,
 } from '../modules/clientes/service';
 import { crearPedido } from '../modules/pedidos/service';
-import { crearCotizacionAmg, crearCotizacionAmgDesdeItemsResueltos, obtenerPdfCotizacion } from '../modules/cotizaciones-amg/service';
+import {
+  crearCotizacionAmg,
+  crearCotizacionAmgDesdeItemsResueltos,
+  obtenerPdfCotizacion,
+  calcularTotalesCotizacion,
+} from '../modules/cotizaciones-amg/service';
 import {
   crearSolicitudProductoAmg,
   obtenerSolicitudPendienteMasReciente,
@@ -805,28 +810,18 @@ function formatearResumen(borrador: BorradorCotizacionAmg): string {
   const ajuste = borrador.ajustePorcentaje ?? 0;
   const esCuentaCobro = borrador.tipoDocumento === 'cuenta_cobro';
 
-  // Se redondea el precio unitario ajustado y el total por ítem ACÁ MISMO --
-  // exactamente como lo vuelve a hacer finalizarCotizacion()/service.ts al
-  // crear la cotización real -- para que el subtotal de este resumen nunca
-  // quede unos pesos distinto del que termina cobrándose (con metraje o
-  // ajustes por tipo de cliente, sumar precios sin redondear por ítem podía
-  // desincronizar el resumen del total final).
-  const itemsCalculados = todos.map((it) => {
-    const valorUnitario = Math.round(it.precioUnitario * (1 + ajuste / 100));
-    const valorTotal = Math.round(it.cantidad * valorUnitario);
-    return { nombre: it.nombre, cantidad: it.cantidad, valorUnitario, valorTotal };
-  });
+  // calcularTotalesCotizacion() es el único lugar que redondea/suma -- así
+  // este resumen nunca queda desincronizado del total que finalizarCotizacion()
+  // termina cobrando de verdad (ver service.ts).
+  const { items: itemsCalculados, subtotal, recargo, iva, total } = calcularTotalesCotizacion(
+    todos.map((it) => ({ nombre: it.nombre, cantidad: it.cantidad, precioUnitario: it.precioUnitario })),
+    ajuste,
+    esCuentaCobro,
+  );
 
   const lineas = itemsCalculados.map(
     (it) => `- ${it.nombre}: ${it.cantidad} x ${formatoCOP(it.valorUnitario)} = ${formatoCOP(it.valorTotal)}`,
   );
-
-  const subtotal = itemsCalculados.reduce((acc, it) => acc + it.valorTotal, 0);
-  // Cuenta de cobro: el jefe pidió sumar un recargo del 30% del valor inicial
-  // además del 19% (a diferencia de factura electrónica, que solo lleva el 19%).
-  const recargo = esCuentaCobro ? Math.round(subtotal * 0.3) : 0;
-  const iva = Math.round(subtotal * 0.19);
-  const total = subtotal + recargo + iva;
   const tierLine = borrador.tipoCliente
     ? `\nTipo de cliente: ${borrador.tipoCliente} (${ajuste >= 0 ? '+' : ''}${ajuste}%)`
     : '';
@@ -853,6 +848,15 @@ async function aplicarActualizacionesManoObra(
   const resumen: string[] = [];
 
   for (const act of actualizaciones) {
+    // act.precio viene de que la IA interpretó texto libre del jefe -- un
+    // valor inválido acá no se queda solo en un borrador, se guarda como el
+    // precio REAL y permanente del producto en el catálogo (afecta a todas
+    // las cotizaciones futuras), así que se descarta antes de tocar nada.
+    if (!esPrecioValido(act.precio) || act.precio === 0) {
+      console.warn(`[AMG] Precio de tarifa inválido ignorado para "${act.nombre}":`, act.precio);
+      continue;
+    }
+
     let producto = await buscarProductoManoObraSimilar(act.nombre);
     if (producto) {
       if (producto.precio !== act.precio) {
@@ -886,6 +890,18 @@ async function avanzarAFase(client: Client, chatId: string, borrador: BorradorCo
   await client.sendMessage(chatId, preguntaFase(nuevaFase));
 }
 
+// La IA extrae nuevoPrecioUnitario/nuevaCantidad de texto libre -- no hay
+// garantía de que sean números razonables (podría alucinar un negativo, un
+// NaN, o un valor absurdamente alto). Un valor inválido aquí terminaría en
+// el resumen que ve el jefe (o, en el peor caso, en una cotización real), así
+// que se descarta el ajuste puntual en vez de aplicarlo a ciegas.
+function esPrecioValido(valor: number): boolean {
+  return Number.isFinite(valor) && valor >= 0;
+}
+function esCantidadValida(valor: number): boolean {
+  return Number.isFinite(valor) && valor > 0;
+}
+
 function aplicarAjustes(borrador: BorradorCotizacionAmg, ajustes: { nombre: string; nuevoPrecioUnitario?: number; nuevaCantidad?: number; eliminar?: boolean }[]) {
   for (const ajuste of ajustes) {
     const buckets = [borrador.items, borrador.manoObra, borrador.metraje];
@@ -899,8 +915,14 @@ function aplicarAjustes(borrador: BorradorCotizacionAmg, ajustes: { nombre: stri
       if (ajuste.eliminar) {
         bucket.splice(idx, 1);
       } else {
-        if (ajuste.nuevoPrecioUnitario !== undefined) bucket[idx].precioUnitario = ajuste.nuevoPrecioUnitario;
-        if (ajuste.nuevaCantidad !== undefined) bucket[idx].cantidad = ajuste.nuevaCantidad;
+        if (ajuste.nuevoPrecioUnitario !== undefined) {
+          if (esPrecioValido(ajuste.nuevoPrecioUnitario)) bucket[idx].precioUnitario = ajuste.nuevoPrecioUnitario;
+          else console.warn(`[AMG] Ajuste de precio inválido ignorado para "${ajuste.nombre}":`, ajuste.nuevoPrecioUnitario);
+        }
+        if (ajuste.nuevaCantidad !== undefined) {
+          if (esCantidadValida(ajuste.nuevaCantidad)) bucket[idx].cantidad = ajuste.nuevaCantidad;
+          else console.warn(`[AMG] Ajuste de cantidad inválido ignorado para "${ajuste.nombre}":`, ajuste.nuevaCantidad);
+        }
       }
       break;
     }
@@ -919,15 +941,25 @@ async function finalizarCotizacion(client: Client, ownJid: string, chatId: strin
   // nada que cotizar) -- si Supabase/la red fallan a mitad de camino, el
   // borrador se conserva para poder reintentar sin que el jefe tenga que
   // rehacer todo el flujo desde cero (ver el catch más abajo).
+  // Mismo redondeo que ya vio el jefe en el resumen (ver formatearResumen) --
+  // calcularTotalesCotizacion() es el único que decide el valorUnitario
+  // final, acá solo se le pega de vuelta productoId/tipo por posición
+  // (mismo orden en que se armó `todos`).
+  const { items: itemsCalculados } = calcularTotalesCotizacion(
+    todos.map((it) => ({ nombre: it.nombre, cantidad: it.cantidad, precioUnitario: it.precioUnitario })),
+    ajuste,
+    borrador.tipoDocumento === 'cuenta_cobro',
+  );
+
   try {
     const cotizacion = await crearCotizacionAmgDesdeItemsResueltos(
       borrador.numeroCliente,
       borrador.clienteFinal ?? borrador.nombrePerfil ?? `Cliente ${borrador.numeroCliente}`,
-      todos.map((it) => ({
+      todos.map((it, i) => ({
         productoId: it.productoId,
         nombre: it.nombre,
         cantidad: it.cantidad,
-        valorUnitario: Math.round(it.precioUnitario * (1 + ajuste / 100)),
+        valorUnitario: itemsCalculados[i].valorUnitario,
         tipo: it.tipo,
       })),
       borrador.tipoDocumento === 'cuenta_cobro',
@@ -1261,7 +1293,21 @@ async function continuarFlujoCotizacion(
           }
         }
 
-        if (respuesta.ajustePorcentaje === undefined) {
+        // <= -100 dejaría precios en cero o negativos; un valor no finito o
+        // absurdamente alto es casi seguro un error de interpretación de la
+        // IA -- en ambos casos se trata como "no dio un porcentaje válido"
+        // y se le vuelve a preguntar, en vez de guardar la tarifa así.
+        const ajustePorcentaje = respuesta.ajustePorcentaje;
+        const ajusteValido =
+          ajustePorcentaje !== undefined &&
+          Number.isFinite(ajustePorcentaje) &&
+          ajustePorcentaje > -100 &&
+          ajustePorcentaje <= 500;
+
+        if (!ajusteValido || ajustePorcentaje === undefined) {
+          if (ajustePorcentaje !== undefined) {
+            console.warn(`[AMG] % de ajuste de tarifa inválido ignorado para "${tipoPendiente}":`, ajustePorcentaje);
+          }
           const encabezado = confirmaciones.length > 0 ? `Listo, actualicé:\n${confirmaciones.map((c) => `- ${c}`).join('\n')}\n\n` : '';
           await client.sendMessage(
             chatId,
@@ -1271,9 +1317,9 @@ async function continuarFlujoCotizacion(
           return;
         }
 
-        await guardarTarifa(tipoPendiente, respuesta.ajustePorcentaje);
+        await guardarTarifa(tipoPendiente, ajustePorcentaje);
         borrador.tipoCliente = tipoPendiente;
-        borrador.ajustePorcentaje = respuesta.ajustePorcentaje;
+        borrador.ajustePorcentaje = ajustePorcentaje;
         borrador.pendienteTarifaNombre = undefined;
 
         if (confirmaciones.length > 0) {

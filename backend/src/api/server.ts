@@ -26,15 +26,40 @@ declare module '@fastify/jwt' {
 }
 
 export function buildServer() {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) {
+    throw new Error(
+      'Falta JWT_SECRET en .env -- sin esto los tokens de sesión de la app web se firmarían con un secreto público y adivinable.',
+    );
+  }
+
   const app = Fastify({ logger: false, bodyLimit: 10 * 1024 * 1024 });
 
-  app.register(cors, { origin: true });
-  app.register(jwt, { secret: process.env.JWT_SECRET ?? 'cambiar-este-secreto' });
+  // Solo orígenes locales -- la app web (frontend/) corre en la misma
+  // máquina/red que este servidor (que además solo escucha en 127.0.0.1).
+  app.register(cors, { origin: [/^http:\/\/localhost:\d+$/, /^http:\/\/127\.0\.0\.1:\d+$/] });
+  app.register(jwt, { secret: jwtSecret });
 
   app.decorate('auth', async (req: any, reply: any) => {
     try {
       await req.jwtVerify();
     } catch {
+      reply.code(401).send({ ok: false, error: 'No autorizado' });
+    }
+  });
+
+  // Los endpoints /admin/* no tienen su propio login (están pensados para
+  // scripts internos del dueño, ej. scripts/avisar_jefe_*.ts) -- hasta ahora
+  // su única protección era que el server solo escucha en 127.0.0.1. Este
+  // token es una segunda capa, para que no queden abiertos si algún día
+  // cambia esa exposición (proxy, 0.0.0.0, etc.).
+  const adminToken = process.env.ADMIN_INTERNAL_TOKEN;
+  if (!adminToken) {
+    throw new Error('Falta ADMIN_INTERNAL_TOKEN en .env -- protege los endpoints /admin/*.');
+  }
+  app.addHook('onRequest', async (req: any, reply: any) => {
+    if (!req.url.startsWith('/admin/')) return;
+    if (req.headers['x-internal-token'] !== adminToken) {
       reply.code(401).send({ ok: false, error: 'No autorizado' });
     }
   });

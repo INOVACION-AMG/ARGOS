@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { conReintento } from '../utils/reintentar';
 
 // Reemplaza whatsapp-web.js/Puppeteer (2026-09-08): ese enfoque controlaba un
 // Chrome real, y con dos cuentas distintas la conexión quedaba "viva" para
@@ -97,6 +98,52 @@ async function enviarArchivo(chatId: string, media: MessageMedia): Promise<SentM
 // adjunto descargable" para CUALQUIER adjunto, detectado primero con audios
 // pero afectaba fotos igual (nunca se había probado una foto real).
 // Fuente: https://green-api.com/en/docs/api/receiving/notifications-format/incoming-message/ImageMessage/
+// Un adjunto de WhatsApp se descarga completo en memoria y se manda en
+// base64 a Whisper o a Claude -- sin límites, un archivo enorme (o un
+// servidor lento) podía agotar memoria, quedarse colgado indefinidamente, o
+// disparar el costo de la llamada a la IA. mimeType también viene tal cual
+// lo reporta Green API, sin validar -- se restringe a lo que el bot
+// realmente sabe procesar (imágenes y audio).
+const MEDIA_TIMEOUT_MS = 20_000;
+const MEDIA_MAX_BYTES = 20 * 1024 * 1024; // 20MB, generoso para un audio/foto de WhatsApp
+
+async function descargarMediaConLimites(downloadUrl: string, mimetype: string): Promise<{ data: string; mimetype: string }> {
+  if (!/^(image|audio)\//.test(mimetype) && mimetype !== 'application/ogg') {
+    throw new Error(`Tipo de archivo adjunto no soportado: ${mimetype}`);
+  }
+
+  return conReintento(() => descargarUnaVez(downloadUrl, mimetype), { intentos: 3, esperaMs: 500 });
+}
+
+async function descargarUnaVez(downloadUrl: string, mimetype: string): Promise<{ data: string; mimetype: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), MEDIA_TIMEOUT_MS);
+
+  try {
+    const resp = await fetch(downloadUrl, { signal: controller.signal });
+    if (!resp.ok) throw new Error(`No se pudo descargar el archivo adjunto: ${resp.status}`);
+
+    const largoDeclarado = Number(resp.headers.get('content-length') ?? 0);
+    if (largoDeclarado > MEDIA_MAX_BYTES) {
+      throw new Error(`El archivo adjunto es demasiado grande (${largoDeclarado} bytes).`);
+    }
+
+    const buffer = Buffer.from(await resp.arrayBuffer());
+    if (buffer.byteLength > MEDIA_MAX_BYTES) {
+      throw new Error(`El archivo adjunto es demasiado grande (${buffer.byteLength} bytes).`);
+    }
+
+    return { data: buffer.toString('base64'), mimetype };
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`Descarga del archivo adjunto agotó el tiempo de espera (${MEDIA_TIMEOUT_MS}ms).`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function extraerMedia(messageData: any): { downloadUrl: string; mimetype: string } | undefined {
   const datos = messageData?.fileMessageData;
   if (!datos?.downloadUrl) return undefined;
@@ -163,10 +210,7 @@ function mapearNotificacionAMensaje(body: any, ownWid: string): Message | undefi
     hasMedia,
     async downloadMedia() {
       if (!media) throw new Error('Este mensaje no tiene un archivo adjunto descargable.');
-      const resp = await fetch(media.downloadUrl);
-      if (!resp.ok) throw new Error(`No se pudo descargar el archivo adjunto: ${resp.status}`);
-      const buffer = Buffer.from(await resp.arrayBuffer());
-      return { data: buffer.toString('base64'), mimetype: media.mimetype };
+      return descargarMediaConLimites(media.downloadUrl, media.mimetype);
     },
     async getContact() {
       return { pushname: senderName, name: senderName, number: soloDigitos(chatId) };

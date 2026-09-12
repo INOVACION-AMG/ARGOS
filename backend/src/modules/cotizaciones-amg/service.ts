@@ -1,4 +1,5 @@
 import { amgSupabase } from '../../integrations/amgSupabase';
+import { conReintento } from '../../utils/reintentar';
 import type { ItemPedidoAmg, ProductoCatalogoAmg } from '../../ai/ordersAmg';
 import { generarCotizacionPdfBuffer } from '../../pdf/generarCotizacionPdf';
 import { TIEMPO_EJECUCION_DEFAULT } from '../../pdf/constantesCotizacion';
@@ -6,8 +7,60 @@ import { TIEMPO_EJECUCION_DEFAULT } from '../../pdf/constantesCotizacion';
 // Igual a AMG-LEGION src/lib/constants/cotizacion.ts (IVA_RATE) -- repos
 // separados, se mantiene el mismo valor a mano.
 const IVA_RATE = 0.19;
+// Regla del jefe: cuenta de cobro lleva este recargo adicional sobre el
+// subtotal, además del IVA; factura electrónica no lo lleva.
+const RECARGO_CUENTA_COBRO = 0.3;
 
 const BUCKET_COTIZACIONES = 'cotizaciones';
+
+export interface ItemParaTotales {
+  nombre: string;
+  cantidad: number;
+  precioUnitario: number; // precio base, SIN ajuste de tarifa aplicado
+}
+
+export interface ItemCotizacionCalculado {
+  nombre: string;
+  cantidad: number;
+  valorUnitario: number; // con ajuste aplicado, ya redondeado
+  valorTotal: number; // ya redondeado
+}
+
+export interface TotalesCotizacion {
+  items: ItemCotizacionCalculado[];
+  subtotal: number;
+  recargo: number;
+  iva: number;
+  total: number;
+}
+
+// Único lugar que calcula subtotal/recargo/IVA/total de una cotización AMG.
+// Lo usan tanto el resumen que se muestra por WhatsApp antes de aprobar
+// (formatearResumen en whatsapp/messageRouter.ts) como la creación real de
+// la cotización (finalizarCotizacion, más abajo en este mismo archivo) --
+// antes cada uno redondeaba a su manera y podían quedar desincronizados por
+// unos pesos con metraje o ajustes de tarifa. Redondea el precio unitario
+// ajustado y el total POR ÍTEM primero, y solo después suma esos totales ya
+// redondeados para el subtotal (nunca sumar precios sin redondear y
+// redondear el resultado al final -- eso es lo que causaba el desfase).
+export function calcularTotalesCotizacion(
+  items: ItemParaTotales[],
+  ajustePorcentaje: number,
+  esCuentaCobro: boolean,
+): TotalesCotizacion {
+  const itemsCalculados: ItemCotizacionCalculado[] = items.map((it) => {
+    const valorUnitario = Math.round(it.precioUnitario * (1 + ajustePorcentaje / 100));
+    const valorTotal = Math.round(it.cantidad * valorUnitario);
+    return { nombre: it.nombre, cantidad: it.cantidad, valorUnitario, valorTotal };
+  });
+
+  const subtotal = itemsCalculados.reduce((acc, it) => acc + it.valorTotal, 0);
+  const recargo = esCuentaCobro ? Math.round(subtotal * RECARGO_CUENTA_COBRO) : 0;
+  const iva = Math.round(subtotal * IVA_RATE);
+  const total = subtotal + recargo + iva;
+
+  return { items: itemsCalculados, subtotal, recargo, iva, total };
+}
 
 export interface ItemCotizacionConfirmado {
   producto: string;
@@ -189,7 +242,7 @@ async function crearCotizacionDesdeConfirmados(
   const subtotal = confirmados.reduce((acc, i) => acc + i.valorTotal, 0);
   // Regla del jefe: cuenta de cobro lleva un recargo del 30% del valor
   // inicial además del 19%; factura electrónica solo lleva el 19%.
-  const recargo = esCuentaCobro ? Math.round(subtotal * 0.3) : 0;
+  const recargo = esCuentaCobro ? Math.round(subtotal * RECARGO_CUENTA_COBRO) : 0;
   const iva = Math.round(subtotal * IVA_RATE);
   const total = subtotal + recargo + iva;
 
@@ -234,11 +287,14 @@ async function crearCotizacionDesdeConfirmados(
     });
 
     const pdfPath = `${cotizacion.id}/cotizacion.pdf`;
-    const { error: errUpload } = await supabase.storage
-      .from(BUCKET_COTIZACIONES)
-      .upload(pdfPath, pdfBuffer, { contentType: 'application/pdf', upsert: true });
-
-    if (errUpload) throw new Error(errUpload.message);
+    // upsert:true hace que subir el mismo PDF dos veces sea inofensivo --
+    // seguro reintentar si Supabase falla por una razón transitoria.
+    await conReintento(async () => {
+      const { error: errUpload } = await supabase.storage
+        .from(BUCKET_COTIZACIONES)
+        .upload(pdfPath, pdfBuffer!, { contentType: 'application/pdf', upsert: true });
+      if (errUpload) throw new Error(errUpload.message);
+    });
 
     await supabase.from('cotizaciones').update({ pdf_path: pdfPath, estado: 'generada' }).eq('id', cotizacion.id);
   } catch (err) {
