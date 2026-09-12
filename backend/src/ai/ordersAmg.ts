@@ -167,7 +167,10 @@ export async function interpretarMensajeClienteAmg(
               `\n\nMensaje del cliente: "${mensaje}"` +
               (imagen
                 ? '\n\n(El cliente también mandó la imagen adjunta -- úsala para precisar cantidades, modelo o características si ayuda a elegir el producto correcto del catálogo.)'
-                : ''),
+                : '') +
+              '\n\n(Este mensaje puede venir de un audio transcrito automáticamente de alguien que habla rápido y de ' +
+              'corrido -- puede tener frases fragmentadas, palabras repetidas o conectores de menos. Interpreta la ' +
+              'intención igual; no lo mandes a "requiere_humano" ni le pidas que reformule solo por cómo quedó redactado.)',
           },
         ],
       },
