@@ -445,6 +445,38 @@ async function manejarComandoAgregar(client: Client, ownJid: string, textoComand
   }
 }
 
+// Antepone el nombre real del contacto (tomado del perfil de WhatsApp) en vez
+// del genérico "LÍDER" en las respuestas del flujo AMG -- sin esto, cualquier
+// número autorizado (el jefe, Fernando, futuros administradores) recibe el
+// mismo trato impersonal. Solo reemplaza si el nombre de perfil parece un
+// nombre real; si no, el flujo sigue diciendo "LÍDER" como antes.
+function primerNombre(nombrePerfil: string | undefined): string {
+  const crudo = nombrePerfil?.trim().split(/\s+/)[0]?.replace(/[^\p{L}]/gu, '') ?? '';
+  if (crudo.length < 2) return 'LÍDER';
+  return crudo.charAt(0).toUpperCase() + crudo.slice(1).toLowerCase();
+}
+
+// Envuelve el cliente de WhatsApp para que cualquier mensaje de texto que el
+// flujo AMG mande con el placeholder "LÍDER" salga con el nombre real --
+// sin tener que tocar cada uno de los mensajes hardcodeados en todo el
+// archivo (formatearResumen, preguntaFase, continuarFlujoCotizacion, etc.),
+// que ya reciben este mismo `client` en cascada.
+function envolverClientePersonalizado(client: Client, nombrePerfil: string | undefined): Client {
+  const nombre = primerNombre(nombrePerfil);
+  if (nombre === 'LÍDER') return client;
+  return new Proxy(client, {
+    get(target, prop, receiver) {
+      if (prop === 'sendMessage') {
+        return (chatId: string, content: string | MessageMedia) => {
+          const contenidoFinal = typeof content === 'string' ? content.replace(/LÍDER/g, nombre) : content;
+          return target.sendMessage(chatId, contenidoFinal);
+        };
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+  }) as Client;
+}
+
 export async function manejarMensajeDeCliente(
   client: Client,
   ownJid: string,
@@ -473,7 +505,7 @@ export async function manejarMensajeDeCliente(
     }
 
     if (MODO_BOT === 'amg') {
-      await resolverMensajeAmg(client, ownJid, chatId, cliente.id, nombrePerfil, numero, texto, imagen);
+      await resolverMensajeAmg(envolverClientePersonalizado(client, nombrePerfil), ownJid, chatId, cliente.id, nombrePerfil, numero, texto, imagen);
       return;
     }
 
@@ -539,7 +571,16 @@ export async function manejarMensajeDeCliente(
     );
   } catch (err) {
     console.error('Error procesando mensaje de cliente:', err);
-    await client.sendMessage(chatId, 'Tuvimos un problema procesando tu mensaje. Intenta de nuevo en un momento, por favor.');
+    // El catch-all de D'Carnes ("Tuvimos un problema...") también cubre
+    // cualquier falla no controlada dentro de resolverMensajeAmg (ej. el
+    // apagón de Supabase del 2026-09-18, que hizo que el jefe recibiera esta
+    // misma disculpa genérica por cada mensaje que mandó) -- en modo AMG usa
+    // un tono más cercano y personalizado en vez del genérico compartido.
+    const mensajeError =
+      MODO_BOT === 'amg'
+        ? `Tuve un problema técnico procesando tu mensaje, ${primerNombre(nombrePerfil)}. No se perdió nada -- vuelve a escribirme en un momento y seguimos donde íbamos.`
+        : 'Tuvimos un problema procesando tu mensaje. Intenta de nuevo en un momento, por favor.';
+    await client.sendMessage(chatId, mensajeError);
   }
 }
 
