@@ -52,6 +52,21 @@ import {
   type ItemBorradorAmg,
   type FaseCotizacionAmg,
 } from '../modules/sesion-cotizacion-amg/service';
+import {
+  obtenerSesionServicio,
+  guardarSesionServicio,
+  borrarSesionServicio,
+  borradorVacio as borradorServicioVacio,
+  type BorradorServicioAmg,
+  type FaseServicioAmg,
+} from '../modules/sesion-servicio-amg/service';
+import { interpretarServicioAmg, type ServicioTipoAmg } from '../ai/serviciosAmg';
+import {
+  buscarClienteAmgPorNombre,
+  crearClienteAmg,
+  listarTecnicosActivosAmg,
+  crearServicioAmg,
+} from '../modules/servicios-amg/service';
 import { MODO_BOT } from '../config/modo';
 
 const COMANDO_REANUDAR = '/reanudar';
@@ -219,6 +234,19 @@ async function obtenerNombrePerfil(msg: Message): Promise<string | undefined> {
 
 function soloDigitos(valor: string): string {
   return valor.replace(/[^\d]/g, '');
+}
+
+// Números autorizados en modo AMG que, en vez del flujo normal de
+// cotizaciones (dirigido al jefe/Fernando), deben ir al flujo de crear
+// servicios técnicos (Daniel Calderón, coordinador). Separado de
+// ARGOS_NUMEROS_AUTORIZADOS -- ese sigue siendo el filtro de acceso general,
+// esto solo decide A CUÁL de los dos flujos se enruta un número ya admitido.
+function esNumeroServiciosAmg(numero: string): boolean {
+  const numeros = (process.env.ARGOS_NUMEROS_SERVICIOS_AMG ?? '')
+    .split(',')
+    .map((n) => soloDigitos(n))
+    .filter(Boolean);
+  return numeros.includes(soloDigitos(numero));
 }
 
 // WhatsApp a veces identifica al remitente por su número real
@@ -505,7 +533,12 @@ export async function manejarMensajeDeCliente(
     }
 
     if (MODO_BOT === 'amg') {
-      await resolverMensajeAmg(envolverClientePersonalizado(client, nombrePerfil), ownJid, chatId, cliente.id, nombrePerfil, numero, texto, imagen);
+      const clientePersonalizado = envolverClientePersonalizado(client, nombrePerfil);
+      if (esNumeroServiciosAmg(numero)) {
+        await resolverServicioAmg(clientePersonalizado, chatId, numero, nombrePerfil, texto);
+        return;
+      }
+      await resolverMensajeAmg(clientePersonalizado, ownJid, chatId, cliente.id, nombrePerfil, numero, texto, imagen);
       return;
     }
 
@@ -634,6 +667,135 @@ async function manejarSolicitudHistorialCotizacion(client: Client, chatId: strin
   await client.sendMessage(chatId, `Aquí está, LÍDER -- cotización #${resultado.consecutivo} de "${historial.nombre}":`);
   const media = new MessageMedia('application/pdf', resultado.pdfBuffer.toString('base64'), `Cotizacion-${consecutivoLabel}.pdf`);
   await client.sendMessage(chatId, media);
+}
+
+const TIPO_SERVICIO_LABEL: Record<ServicioTipoAmg, string> = {
+  mantenimiento_preventivo: 'Mantenimiento preventivo',
+  mantenimiento_correctivo: 'Mantenimiento correctivo',
+  instalacion: 'Instalación',
+  suministro: 'Suministro',
+};
+
+function borradorServicioCompleto(b: BorradorServicioAmg): boolean {
+  return Boolean(b.clienteNombre && b.tipo && b.sistemas.length > 0 && b.descripcion && b.tecnicoId);
+}
+
+function resumenServicioAmg(b: BorradorServicioAmg, clienteEsNuevo: boolean): string {
+  return [
+    `Cliente: ${b.clienteNombre}${clienteEsNuevo ? ' (nuevo, se crea al confirmar)' : ''}`,
+    `Tipo: ${TIPO_SERVICIO_LABEL[b.tipo!]}`,
+    `Sistema(s): ${b.sistemas.join(', ')}`,
+    `Descripción: ${b.descripcion}`,
+    `Técnico asignado: ${b.tecnicoNombre}`,
+    `Fecha programada: ${b.fechaProgramada ?? 'sin definir'}`,
+  ].join('\n');
+}
+
+function preguntaFaltanteServicioAmg(b: BorradorServicioAmg): string {
+  if (!b.clienteNombre) return '¿Para qué cliente es este servicio?';
+  if (!b.tipo) return '¿Qué tipo de servicio es: mantenimiento preventivo, mantenimiento correctivo, instalación o suministro?';
+  if (b.sistemas.length === 0) {
+    return '¿Qué sistema hay que intervenir? (CCTV, control de acceso, alarma de intrusión, detección de incendio o cerca eléctrica)';
+  }
+  if (!b.descripcion) return 'Cuéntame brevemente qué hay que hacer.';
+  if (!b.tecnicoId) return '¿Qué técnico lo va a hacer?';
+  return '¿Algo más que deba saber antes de crearlo?';
+}
+
+// Flujo de Daniel Calderón (coordinador) creando órdenes de servicio para
+// técnicos por WhatsApp en vez del panel web -- ver ai/serviciosAmg.ts y
+// modules/servicios-amg/service.ts. Un solo tool-call de IA por mensaje
+// hace de extractor y detector de confirmación a la vez (ver comentario en
+// interpretarServicioAmg), así que este flujo no necesita una máquina de
+// fases tan granular como el de cotizaciones: solo "recolectando" (falta
+// algo) y "esperando_confirmacion" (ya se mostró el resumen completo).
+async function resolverServicioAmg(
+  client: Client,
+  chatId: string,
+  numero: string,
+  nombrePerfil: string | undefined,
+  texto: string,
+) {
+  try {
+    const sesionExistente = await obtenerSesionServicio(numero);
+    const fase: FaseServicioAmg = sesionExistente?.fase ?? 'recolectando';
+    const borrador: BorradorServicioAmg = sesionExistente?.datos ?? borradorServicioVacio(numero, nombrePerfil);
+
+    const tecnicos = await listarTecnicosActivosAmg();
+
+    const interpretacion = await interpretarServicioAmg(
+      texto,
+      {
+        clienteNombre: borrador.clienteNombre,
+        tipo: borrador.tipo,
+        sistemas: borrador.sistemas,
+        descripcion: borrador.descripcion,
+        tecnicoNombre: borrador.tecnicoNombre,
+        fechaProgramada: borrador.fechaProgramada,
+      },
+      tecnicos,
+      fase,
+      new Date().toISOString().slice(0, 10),
+    );
+
+    if (interpretacion.cancela) {
+      await borrarSesionServicio(numero);
+      await client.sendMessage(chatId, 'Listo, cancelé ese servicio. Cuando quieras armar otro, cuéntame qué necesitas.');
+      return;
+    }
+
+    if (interpretacion.clienteNombre) borrador.clienteNombre = interpretacion.clienteNombre;
+    if (interpretacion.tipo) borrador.tipo = interpretacion.tipo;
+    if (interpretacion.sistemas && interpretacion.sistemas.length > 0) borrador.sistemas = interpretacion.sistemas;
+    if (interpretacion.descripcion) borrador.descripcion = interpretacion.descripcion;
+    if (interpretacion.fechaProgramada) borrador.fechaProgramada = interpretacion.fechaProgramada;
+    if (interpretacion.tecnicoId) {
+      borrador.tecnicoId = interpretacion.tecnicoId;
+      borrador.tecnicoNombre = tecnicos.find((t) => t.id === interpretacion.tecnicoId)?.nombre;
+    }
+
+    if (fase === 'esperando_confirmacion' && interpretacion.confirma && borradorServicioCompleto(borrador)) {
+      const comercialId = process.env.ARGOS_SERVICIOS_COMERCIAL_ID;
+      if (!comercialId) throw new Error('Falta ARGOS_SERVICIOS_COMERCIAL_ID en .env');
+
+      let cliente = await buscarClienteAmgPorNombre(borrador.clienteNombre!);
+      if (!cliente) cliente = await crearClienteAmg(borrador.clienteNombre!, comercialId);
+
+      await crearServicioAmg({
+        clienteId: cliente.id,
+        tipo: borrador.tipo!,
+        sistemas: borrador.sistemas,
+        descripcion: borrador.descripcion!,
+        fechaProgramada: borrador.fechaProgramada ?? null,
+        tecnicoId: borrador.tecnicoId ?? null,
+        comercialId,
+      });
+
+      await borrarSesionServicio(numero);
+      await client.sendMessage(
+        chatId,
+        `Listo -- servicio creado para "${cliente.nombre}" y asignado a ${borrador.tecnicoNombre}. ¿Necesitas crear otro?`,
+      );
+      return;
+    }
+
+    if (borradorServicioCompleto(borrador)) {
+      const clienteExistente = await buscarClienteAmgPorNombre(borrador.clienteNombre!);
+      await guardarSesionServicio(numero, 'esperando_confirmacion', borrador);
+      const resumen = resumenServicioAmg(borrador, !clienteExistente);
+      await client.sendMessage(chatId, `Resumen del servicio:\n\n${resumen}\n\n¿Lo creo así? (sí, o dime qué cambiar)`);
+      return;
+    }
+
+    await guardarSesionServicio(numero, 'recolectando', borrador);
+    await client.sendMessage(chatId, interpretacion.respuesta ?? preguntaFaltanteServicioAmg(borrador));
+  } catch (err) {
+    console.error('Error en flujo de servicios AMG:', err);
+    await client.sendMessage(
+      chatId,
+      `Tuve un problema técnico armando ese servicio. No se perdió nada -- vuelve a escribirme en un momento y seguimos donde íbamos.`,
+    );
+  }
 }
 
 async function resolverMensajeAmg(

@@ -111,6 +111,19 @@ model SesionCotizacionAmg {
   actualizadoEn DateTime @updatedAt
 }
 
+// Igual patrón que SesionCotizacionAmg, pero para el flujo de Daniel Calderón
+// creando servicios técnicos por WhatsApp (ver modules/servicios-amg,
+// ai/serviciosAmg.ts) -- tabla propia porque son datos y una fase distintos,
+// no reutiliza la de cotizaciones aunque comparten número de WhatsApp.
+model SesionServicioAmg {
+  id            String   @id @default(uuid())
+  numeroCliente String   @unique
+  fase          String // recolectando | esperando_confirmacion
+  datos         Json
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+}
+
 // Historial por cliente final (el conjunto/edificio/persona real al que se le
 // hace la cotización -- ej. "Altavista del Portal", no el "tipo de cliente"
 // de TarifaClienteAmg). Se pregunta al jefe en la fase "esperando_cliente_final"
