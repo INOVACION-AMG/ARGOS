@@ -64,7 +64,15 @@ interface SentMessage {
 async function fetchJson(metodo: string): Promise<any> {
   const resp = await fetch(urlMetodo(metodo));
   if (!resp.ok) throw new Error(`Green API ${metodo} falló: ${resp.status} ${await resp.text()}`);
-  return resp.json();
+  // Green API respondía "null" cuando no hay nada que devolver (ej.
+  // receiveNotification sin notificaciones pendientes), pero en algunas
+  // instancias ahora manda el cuerpo realmente vacío -- JSON.parse("") lanza
+  // "Unexpected end of JSON input", que sin este chequeo se trataba como un
+  // error real y frenaba el polling a INTERVALO_TRAS_ERROR_MS en vez de
+  // INTERVALO_SIN_MENSAJES_MS en cada ciclo sin mensajes.
+  const texto = await resp.text();
+  if (!texto) return null;
+  return JSON.parse(texto);
 }
 
 async function enviarTexto(chatId: string, mensaje: string): Promise<SentMessage> {
