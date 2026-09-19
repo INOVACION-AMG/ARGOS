@@ -124,6 +124,18 @@ model SesionServicioAmg {
   actualizadoEn DateTime @updatedAt
 }
 
+// Mismo patrón que las dos anteriores, para el flujo de Luisa: manda un
+// Excel de cotización y Argos le arma la cuenta de cobro en Word -- ver
+// modules/excel-cotizacion, modules/cuenta-cobro, ai/cuentaCobroAmg.ts.
+model SesionCuentaCobroAmg {
+  id            String   @id @default(uuid())
+  numeroCliente String   @unique
+  fase          String // esperando_formato | esperando_numero_fa | esperando_confirmacion
+  datos         Json
+  creadoEn      DateTime @default(now())
+  actualizadoEn DateTime @updatedAt
+}
+
 // Historial por cliente final (el conjunto/edificio/persona real al que se le
 // hace la cotización -- ej. "Altavista del Portal", no el "tipo de cliente"
 // de TarifaClienteAmg). Se pregunta al jefe en la fase "esperando_cliente_final"

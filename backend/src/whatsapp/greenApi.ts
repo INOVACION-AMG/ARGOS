@@ -53,6 +53,7 @@ export interface Message {
   body: string;
   type: string;
   hasMedia: boolean;
+  mimetype?: string;
   downloadMedia(): Promise<{ data: string; mimetype: string }>;
   getContact(): Promise<Contact>;
 }
@@ -115,8 +116,15 @@ async function enviarArchivo(chatId: string, media: MessageMedia): Promise<SentM
 const MEDIA_TIMEOUT_MS = 20_000;
 const MEDIA_MAX_BYTES = 20 * 1024 * 1024; // 20MB, generoso para un audio/foto de WhatsApp
 
+// Excel (Luisa manda la cotización así, ver flujo de cuenta de cobro en
+// messageRouter.ts) -- ambos formatos, moderno (.xlsx) y viejo (.xls).
+const MIMETYPES_EXCEL = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel',
+]);
+
 async function descargarMediaConLimites(downloadUrl: string, mimetype: string): Promise<{ data: string; mimetype: string }> {
-  if (!/^(image|audio)\//.test(mimetype) && mimetype !== 'application/ogg') {
+  if (!/^(image|audio)\//.test(mimetype) && mimetype !== 'application/ogg' && !MIMETYPES_EXCEL.has(mimetype)) {
     throw new Error(`Tipo de archivo adjunto no soportado: ${mimetype}`);
   }
 
@@ -216,6 +224,7 @@ function mapearNotificacionAMensaje(body: any, ownWid: string): Message | undefi
     body: texto,
     type,
     hasMedia,
+    mimetype: media?.mimetype,
     async downloadMedia() {
       if (!media) throw new Error('Este mensaje no tiene un archivo adjunto descargable.');
       return descargarMediaConLimites(media.downloadUrl, media.mimetype);

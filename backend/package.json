@@ -10,7 +10,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "test": "npm run test:unit && npm run test:integration",
-    "test:unit": "tsx --test src/modules/cotizaciones-amg/service.test.ts src/whatsapp/messageRouter.unit.test.ts src/ai/flujoCotizacionAmg.test.ts src/ai/ordersAmg.test.ts",
+    "test:unit": "tsx --test src/modules/cotizaciones-amg/service.test.ts src/whatsapp/messageRouter.unit.test.ts src/ai/flujoCotizacionAmg.test.ts src/ai/ordersAmg.test.ts src/lib/numeroALetras.test.ts src/modules/excel-cotizacion/service.test.ts",
     "test:integration": "tsx --test src/whatsapp/messageRouter.integration.test.ts",
     "postinstall": "node scripts/fix-react-pdf-hyphenate.js"
   },
@@ -28,12 +28,14 @@
     "@react-pdf/renderer": "^4.9.0",
     "@supabase/supabase-js": "^2.116.0",
     "bcryptjs": "^3.0.3",
+    "docx": "^9.7.1",
     "dotenv": "^17.4.2",
     "fastify": "^5.11.3",
     "node-cron": "^4.6.0",
     "openai": "^7.4.0",
     "pino": "^10.3.1",
-    "react": "^19.2.8"
+    "react": "^19.2.8",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

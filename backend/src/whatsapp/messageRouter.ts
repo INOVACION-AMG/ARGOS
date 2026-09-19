@@ -67,6 +67,16 @@ import {
   listarTecnicosActivosAmg,
   crearServicioAmg,
 } from '../modules/servicios-amg/service';
+import {
+  obtenerSesionCuentaCobro,
+  guardarSesionCuentaCobro,
+  borrarSesionCuentaCobro,
+  type BorradorCuentaCobro,
+  type FaseCuentaCobro,
+} from '../modules/sesion-cuenta-cobro/service';
+import { parsearCotizacionExcel } from '../modules/excel-cotizacion/service';
+import { interpretarRespuestaCuentaCobro } from '../ai/cuentaCobroAmg';
+import { generarCuentaCobroPersonal, generarCuentaCobroEmpresa } from '../modules/cuenta-cobro/generarDocx';
 import { MODO_BOT } from '../config/modo';
 
 const COMANDO_REANUDAR = '/reanudar';
@@ -206,6 +216,19 @@ async function handleMessage(client: Client, msg: Message) {
     if (!texto) return; // no se pudo transcribir, ya se avisó al cliente
   }
 
+  // Excel de Luisa (cuenta de cobro) -- caso puntual antes del rechazo
+  // genérico de documentos de abajo, solo para su número y solo Excel.
+  if (
+    MODO_BOT === 'amg' &&
+    msg.hasMedia &&
+    msg.type === 'document' &&
+    esNumeroCuentaCobroAmg(chatId.split('@')[0]) &&
+    (msg.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || msg.mimetype === 'application/vnd.ms-excel')
+  ) {
+    await manejarExcelCuentaCobro(client, chatId, msg);
+    return;
+  }
+
   // Documentos (PDF, Word, etc.) y videos no se pueden leer todavía -- antes
   // se perdían en silencio (si venían con texto/caption, ese texto solo se
   // procesaba sin avisar que el archivo adjunto se ignoró por completo).
@@ -243,6 +266,16 @@ function soloDigitos(valor: string): string {
 // esto solo decide A CUÁL de los dos flujos se enruta un número ya admitido.
 function esNumeroServiciosAmg(numero: string): boolean {
   const numeros = (process.env.ARGOS_NUMEROS_SERVICIOS_AMG ?? '')
+    .split(',')
+    .map((n) => soloDigitos(n))
+    .filter(Boolean);
+  return numeros.includes(soloDigitos(numero));
+}
+
+// Mismo criterio que esNumeroServiciosAmg, para el número de Luisa (le manda
+// a Argos el Excel de cotización y recibe la cuenta de cobro en Word).
+function esNumeroCuentaCobroAmg(numero: string): boolean {
+  const numeros = (process.env.ARGOS_NUMEROS_CUENTA_COBRO_AMG ?? '')
     .split(',')
     .map((n) => soloDigitos(n))
     .filter(Boolean);
@@ -538,6 +571,15 @@ export async function manejarMensajeDeCliente(
         await resolverServicioAmg(clientePersonalizado, chatId, numero, nombrePerfil, texto);
         return;
       }
+      if (esNumeroCuentaCobroAmg(numero)) {
+        const sesionCuentaCobro = await obtenerSesionCuentaCobro(numero);
+        if (sesionCuentaCobro) {
+          await continuarCuentaCobro(clientePersonalizado, chatId, numero, sesionCuentaCobro.fase, sesionCuentaCobro.datos, texto);
+          return;
+        }
+        await client.sendMessage(chatId, 'Hola, mándame el Excel de la cotización y te devuelvo la cuenta de cobro.');
+        return;
+      }
       await resolverMensajeAmg(clientePersonalizado, ownJid, chatId, cliente.id, nombrePerfil, numero, texto, imagen);
       return;
     }
@@ -795,6 +837,142 @@ async function resolverServicioAmg(
       chatId,
       `Tuve un problema técnico armando ese servicio. No se perdió nada -- vuelve a escribirme en un momento y seguimos donde íbamos.`,
     );
+  }
+}
+
+const MIMETYPE_DOCX = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+
+function resumenCuentaCobro(datos: BorradorCuentaCobro): string {
+  const lineas = [`Cliente: ${datos.cliente}`, ''];
+  let categoriaAnterior: string | null = null;
+  for (const item of datos.items) {
+    if (item.categoria !== categoriaAnterior) {
+      lineas.push(`*${item.categoria}*`);
+      categoriaAnterior = item.categoria;
+    }
+    lineas.push(`- ${item.descripcion}: ${item.cantidad} x ${formatoCOP(item.valorUnitario)} = ${formatoCOP(item.total)}`);
+  }
+  lineas.push('');
+  lineas.push(`Valor base: ${formatoCOP(datos.valorBase)}`);
+  if (datos.formato === 'personal') {
+    lineas.push(`Formato: personal (Fernando, sin IVA)${datos.numeroFa ? ` -- ${datos.numeroFa}` : ''}`);
+  } else {
+    const recargo = Math.round(datos.valorBase * 0.3);
+    const iva = Math.round((datos.valorBase + recargo) * 0.19);
+    lineas.push(`Formato: empresa AMG (recargo 30% + IVA 19%)`);
+    lineas.push(`Total con recargo e IVA: ${formatoCOP(datos.valorBase + recargo + iva)}`);
+  }
+  return lineas.join('\n');
+}
+
+// Luisa manda un Excel de cotización (siempre la misma plantilla de
+// Fernando, ver excel-cotizacion/service.ts) y Argos le devuelve la cuenta
+// de cobro en Word -- personal (sin IVA, a nombre de Fernando) o empresa
+// (con recargo/IVA, a nombre de AMG), según si el Excel ya trae las filas
+// de IVA o no. Nunca se genera el archivo sin que Luisa confirme el resumen
+// primero.
+async function manejarExcelCuentaCobro(client: Client, chatId: string, msg: Message): Promise<void> {
+  const numero = chatId.split('@')[0];
+  try {
+    const { data } = await msg.downloadMedia();
+    const parseado = parsearCotizacionExcel(Buffer.from(data, 'base64'));
+    if (!parseado) {
+      await client.sendMessage(
+        chatId,
+        'No logré leer ese Excel -- ¿está armado con la plantilla de siempre (hoja "COTIZACION", con ITEM/DESCRIPCION/CANT/VALOR UNITARIO/TOTAL y una fila VALOR BASE)? Mándamelo de nuevo si le falta algo.',
+      );
+      return;
+    }
+
+    const formato: 'personal' | 'empresa' = parseado.tieneIva ? 'empresa' : 'personal';
+    const datos: BorradorCuentaCobro = {
+      numeroCliente: numero,
+      cliente: parseado.cliente ?? '(sin nombre de cliente en el Excel)',
+      items: parseado.items,
+      valorBase: parseado.valorBase,
+      valorIva: parseado.valorIva,
+      valorTotal: parseado.valorTotal,
+      tieneIvaEnExcel: parseado.tieneIva,
+      formato,
+    };
+
+    if (formato === 'personal') {
+      await guardarSesionCuentaCobro(numero, 'esperando_numero_fa', datos);
+      await client.sendMessage(
+        chatId,
+        `Ya leí la cotización:\n\n${resumenCuentaCobro(datos)}\n\nEste Excel no trae IVA, así que te armo la cuenta de cobro personal de Fernando -- ¿qué número de cuenta de cobro le pongo? (ej. FA20039)`,
+      );
+      return;
+    }
+
+    await guardarSesionCuentaCobro(numero, 'esperando_confirmacion', datos);
+    await client.sendMessage(chatId, `Ya leí la cotización:\n\n${resumenCuentaCobro(datos)}\n\n¿La creo así? (sí, o dime qué cambiar)`);
+  } catch (err) {
+    console.error('Error leyendo Excel de cuenta de cobro:', err);
+    await client.sendMessage(chatId, 'Tuve un problema técnico leyendo ese Excel. Intenta mandarlo de nuevo en un momento.');
+  }
+}
+
+async function continuarCuentaCobro(
+  client: Client,
+  chatId: string,
+  numero: string,
+  fase: FaseCuentaCobro,
+  datos: BorradorCuentaCobro,
+  texto: string,
+): Promise<void> {
+  try {
+    const interpretacion = await interpretarRespuestaCuentaCobro(texto, fase);
+
+    if (interpretacion.cancela) {
+      await borrarSesionCuentaCobro(numero);
+      await client.sendMessage(chatId, 'Listo, cancelé esa cuenta de cobro. Cuando quieras mándame otro Excel.');
+      return;
+    }
+
+    if (fase === 'esperando_numero_fa') {
+      if (!interpretacion.numeroFa) {
+        await client.sendMessage(chatId, interpretacion.respuesta ?? '¿Qué número de cuenta de cobro le pongo? (ej. FA20039)');
+        return;
+      }
+      datos.numeroFa = interpretacion.numeroFa;
+      await guardarSesionCuentaCobro(numero, 'esperando_confirmacion', datos);
+      await client.sendMessage(chatId, `${resumenCuentaCobro(datos)}\n\n¿La creo así? (sí, o dime qué cambiar)`);
+      return;
+    }
+
+    // fase === 'esperando_confirmacion'
+    if (!interpretacion.confirma) {
+      await client.sendMessage(chatId, interpretacion.respuesta ?? '¿La creo así? Contesta sí para generarla, o cuéntame qué cambiar.');
+      return;
+    }
+
+    const fecha = new Date();
+    const buffer =
+      datos.formato === 'personal'
+        ? await generarCuentaCobroPersonal({
+            numeroFa: datos.numeroFa ?? 'FA-SN',
+            cliente: datos.cliente,
+            items: datos.items,
+            valorBase: datos.valorBase,
+            fecha,
+          })
+        : await generarCuentaCobroEmpresa({
+            numero: datos.numeroFa ?? `COT-${fecha.getTime().toString().slice(-6)}`,
+            cliente: datos.cliente,
+            items: datos.items,
+            valorBase: datos.valorBase,
+            fecha,
+            esCuentaCobro: true,
+          });
+
+    const nombreArchivo = `Cuenta_de_Cobro_${datos.cliente.replace(/[^a-zA-Z0-9]+/g, '_')}.docx`;
+    const media = new MessageMedia(MIMETYPE_DOCX, buffer.toString('base64'), nombreArchivo);
+    await client.sendMessage(chatId, media);
+    await borrarSesionCuentaCobro(numero);
+  } catch (err) {
+    console.error('Error en flujo de cuenta de cobro:', err);
+    await client.sendMessage(chatId, 'Tuve un problema técnico generando ese documento. No se perdió nada -- escríbeme "sí" otra vez para reintentarlo.');
   }
 }
 
