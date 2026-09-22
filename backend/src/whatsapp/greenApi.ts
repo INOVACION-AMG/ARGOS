@@ -62,25 +62,17 @@ interface SentMessage {
   id: { _serialized: string };
 }
 
-// Sin esto, un fetch que se queda colgado a medias (conexión abierta pero sin
-// respuesta ni error) nunca lanza ni resuelve -- el ciclo de polling se
-// congela ahí para siempre, sin que aparezca ni un log de error.
-const FETCH_TIMEOUT_MS = 20_000;
-
+// Intenté ponerle un AbortController con timeout aquí mismo (2026-09-22) para
+// que un fetch colgado no congelara el ciclo de polling en silencio -- pero
+// en este servidor esa combinación (signal + esta versión de undici) dejó el
+// propio receiveNotification colgado desde el primer intento, sin abortar
+// nunca y sin loguear nada, justo el síntoma que quería evitar. Revertido:
+// el heartbeat de Client (ver iniciarPolling) y el watchdog de
+// connection.ts ya cubren el caso real (ciclo colgado) reiniciando el
+// proceso entero, sin depender de que este fetch en particular sepa
+// abortarse solo.
 async function fetchJson(metodo: string): Promise<any> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-  let resp: Response;
-  try {
-    resp = await fetch(urlMetodo(metodo), { signal: controller.signal });
-  } catch (err) {
-    if (err instanceof Error && err.name === 'AbortError') {
-      throw new Error(`Green API ${metodo} no respondió en ${FETCH_TIMEOUT_MS}ms.`);
-    }
-    throw err;
-  } finally {
-    clearTimeout(timeout);
-  }
+  const resp = await fetch(urlMetodo(metodo));
   if (!resp.ok) throw new Error(`Green API ${metodo} falló: ${resp.status} ${await resp.text()}`);
   // Green API respondía "null" cuando no hay nada que devolver (ej.
   // receiveNotification sin notificaciones pendientes), pero en algunas
