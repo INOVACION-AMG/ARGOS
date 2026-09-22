@@ -62,8 +62,25 @@ interface SentMessage {
   id: { _serialized: string };
 }
 
+// Sin esto, un fetch que se queda colgado a medias (conexión abierta pero sin
+// respuesta ni error) nunca lanza ni resuelve -- el ciclo de polling se
+// congela ahí para siempre, sin que aparezca ni un log de error.
+const FETCH_TIMEOUT_MS = 20_000;
+
 async function fetchJson(metodo: string): Promise<any> {
-  const resp = await fetch(urlMetodo(metodo));
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let resp: Response;
+  try {
+    resp = await fetch(urlMetodo(metodo), { signal: controller.signal });
+  } catch (err) {
+    if (err instanceof Error && err.name === 'AbortError') {
+      throw new Error(`Green API ${metodo} no respondió en ${FETCH_TIMEOUT_MS}ms.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
   if (!resp.ok) throw new Error(`Green API ${metodo} falló: ${resp.status} ${await resp.text()}`);
   // Green API respondía "null" cuando no hay nada que devolver (ej.
   // receiveNotification sin notificaciones pendientes), pero en algunas
@@ -241,6 +258,16 @@ const INTERVALO_TRAS_ERROR_MS = 5_000;
 export class Client extends EventEmitter {
   info!: { wid: { _serialized: string } };
   private detenido = false;
+  // Se actualiza en cada vuelta del ciclo de polling, haya o no mensaje y haya
+  // o no error -- lo único que confirma es que el ciclo sigue vivo e
+  // intentando. El watchdog en connection.ts lo usa para detectar un ciclo
+  // que se quedó colgado en silencio (ver el incidente real del 2026-09-22:
+  // 5 horas sin registrar nada, pm2 lo seguía viendo "online").
+  private ultimoLatido = Date.now();
+
+  segundosDesdeUltimoLatido(): number {
+    return Math.floor((Date.now() - this.ultimoLatido) / 1000);
+  }
 
   async initialize(): Promise<void> {
     const settings = await this.asegurarRecepcionActiva();
@@ -298,6 +325,7 @@ export class Client extends EventEmitter {
 
   private async iniciarPolling(): Promise<void> {
     while (!this.detenido) {
+      this.ultimoLatido = Date.now();
       let notificacion: any;
       try {
         notificacion = await fetchJson('receiveNotification');
